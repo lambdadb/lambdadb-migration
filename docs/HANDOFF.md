@@ -15,6 +15,8 @@ The folder is now a git repository. Baseline scaffold commit:
 ```bash
 5762535 Initial LambdaDB migration scaffold
 d087187 Fix checkpoint cursors and split write batches
+43f9d1c Update handoff after batch work
+ca7906c Add migration mapping validation
 ```
 
 ## Product Direction
@@ -79,7 +81,9 @@ The architecture intentionally does not fork Qdrant's repository as-is. It uses 
 │   │   ├── file_store_test.go
 │   │   └── store.go
 │   ├── config/
+│   │   ├── field_names.go
 │   │   ├── from_inventory.go
+│   │   ├── from_inventory_test.go
 │   │   ├── mapping.go
 │   │   ├── mapping_validation.go
 │   │   ├── mapping_validation_test.go
@@ -137,6 +141,7 @@ Implemented in `internal/config`:
 - `MappingConfig`
 - `MappingFromInventory`
 - `ValidateMapping`
+- `NormalizeFieldName`
 
 `ValidateMapping` currently checks:
 
@@ -146,6 +151,15 @@ Implemented in `internal/config`:
 - vector similarities are supported before LambdaDB collection creation
 - payload index types and text analyzers are supported
 - target field names in the mapping do not contain dots
+- id, vector, sparse-vector, payload, and payload-index target fields do not collide
+
+Field name behavior:
+
+- default normalization replaces `.` with `_`
+- generated mappings normalize vector, sparse-vector, and indexed payload field targets
+- generated mappings add `payload.rename` entries for dotted indexed payload fields
+- Qdrant inventory warnings suggest normalized names and flag indexed payload collisions
+- transform applies the same payload normalization at write time and rejects runtime field collisions
 
 Important CLI flags:
 
@@ -354,17 +368,6 @@ Options:
 - add `gopkg.in/yaml.v3`
 - or keep V1 JSON-only and update docs/README accordingly
 
-### Field Name Normalization Not Implemented
-
-Design says LambdaDB field names cannot contain dots and should be renamed. Current code only applies explicit `mapping.payload.rename`; it does not automatically normalize dots or detect collisions.
-
-Need to add:
-
-- default dot replacement, probably `.` -> `_`
-- collision detection
-- clear error messages
-- inventory warnings/suggested renames
-
 ### LambdaDB Collection Creation Is Basic
 
 `EnsureCollection` builds index configs from mapping, but has not been verified with real LambdaDB API.
@@ -423,12 +426,11 @@ Suggested fixtures:
 
 ## Suggested Next Work Order
 
-1. Add field-name normalization and collision detection.
-2. Add YAML support or explicitly document JSON-only V1.
-3. Add Qdrant docker compose fixture and a LambdaDB mock server integration test.
-4. Run a real local Qdrant inventory test.
-5. Run a controlled LambdaDB test project migration with a tiny dataset.
-6. Add progress output that is nicer than plain `accepted x/y`.
+1. Add YAML support or explicitly document JSON-only V1.
+2. Add Qdrant docker compose fixture and a LambdaDB mock server integration test.
+3. Run a real local Qdrant inventory test.
+4. Run a controlled LambdaDB test project migration with a tiny dataset.
+5. Add progress output that is nicer than plain `accepted x/y`.
 
 ## Files To Read First In The Next Session
 

@@ -22,18 +22,22 @@ func MappingFromInventory(inv *source.Inventory, targetCollection string) Mappin
 
 	for sourceName, vector := range inv.Vectors {
 		mapping.Vectors[sourceName] = VectorMapping{
-			TargetField: vector.Name,
+			TargetField: NormalizeFieldName(vector.Name),
 			Dimensions:  vector.Dimensions,
 			Similarity:  vector.Similarity,
 		}
 	}
 	for sourceName, sparse := range inv.SparseVectors {
 		mapping.SparseVectors[sourceName] = SparseVectorMapping{
-			TargetField: sparse.Name,
+			TargetField: NormalizeFieldName(sparse.Name),
 		}
 	}
 	for name, index := range inv.PayloadIndexes {
-		mapping.Payload.IndexConfigs[name] = map[string]any{
+		targetName := NormalizeFieldName(name)
+		if targetName != name {
+			mapping.Payload.Rename[name] = targetName
+		}
+		mapping.Payload.IndexConfigs[targetName] = map[string]any{
 			"type": index.Type,
 		}
 	}

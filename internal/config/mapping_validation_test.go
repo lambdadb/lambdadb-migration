@@ -63,6 +63,16 @@ func TestValidateMappingRejectsInvalidPayloadIndex(t *testing.T) {
 	assertErrorContains(t, err, `payload field "geo" has unsupported index type "geo"`)
 }
 
+func TestValidateMappingRejectsFieldNameCollision(t *testing.T) {
+	inv := validationInventory()
+	inv.PayloadIndexes["metadata.url"] = source.PayloadIndex{Name: "metadata.url", Type: "keyword"}
+	inv.PayloadIndexes["metadata_url"] = source.PayloadIndex{Name: "metadata_url", Type: "keyword"}
+	mapping := MappingFromInventory(inv, "articles")
+
+	err := ValidateMapping(inv, mapping, "articles", WriteModeBulk)
+	assertErrorContains(t, err, `field name collision: payload field "metadata.url" and payload field "metadata_url" both target "metadata_url"`)
+}
+
 func validationInventory() *source.Inventory {
 	return &source.Inventory{
 		SourceKind:     "qdrant",

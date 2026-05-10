@@ -89,3 +89,32 @@ func TestRecordToDocumentWithMapping(t *testing.T) {
 		t.Fatalf("mapped sparse vector missing: %#v", doc)
 	}
 }
+
+func TestRecordToDocumentWithMappingNormalizesPayloadFieldNames(t *testing.T) {
+	doc, err := RecordToDocumentWithMapping(source.Record{
+		ID:      "123",
+		Payload: map[string]any{"metadata.url": "https://example.com"},
+	}, config.MappingConfig{})
+	if err != nil {
+		t.Fatalf("RecordToDocumentWithMapping() error = %v", err)
+	}
+	if doc["metadata_url"] != "https://example.com" {
+		t.Fatalf("doc = %#v, want normalized metadata_url", doc)
+	}
+	if _, ok := doc["metadata.url"]; ok {
+		t.Fatalf("doc = %#v, did not expect dotted field", doc)
+	}
+}
+
+func TestRecordToDocumentWithMappingRejectsFieldNameCollision(t *testing.T) {
+	_, err := RecordToDocumentWithMapping(source.Record{
+		ID: "123",
+		Payload: map[string]any{
+			"metadata.url": "https://example.com",
+			"metadata_url": "https://other.example.com",
+		},
+	}, config.MappingConfig{})
+	if err == nil {
+		t.Fatal("RecordToDocumentWithMapping() error = nil, want collision error")
+	}
+}

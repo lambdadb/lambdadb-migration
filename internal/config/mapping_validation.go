@@ -12,6 +12,7 @@ const MaxLambdaDBVectorDimensions int64 = 4096
 
 func ValidateMapping(inv *source.Inventory, mapping MappingConfig, targetCollection string, writeMode WriteMode) error {
 	var errs []error
+	fields := newFieldRegistry()
 
 	if inv == nil {
 		errs = append(errs, fmt.Errorf("source inventory is required"))
@@ -27,31 +28,36 @@ func ValidateMapping(inv *source.Inventory, mapping MappingConfig, targetCollect
 		errs = append(errs, fmt.Errorf("unsupported write mode %q", writeMode))
 	}
 
-	errs = append(errs, validateIDMapping(mapping.IDs)...)
+	errs = append(errs, validateIDMapping(mapping.IDs, fields)...)
 	if inv != nil {
-		errs = append(errs, validateVectorMappings(inv.Vectors, mapping.Vectors)...)
-		errs = append(errs, validateSparseVectorMappings(inv.SparseVectors, mapping.SparseVectors)...)
+		errs = append(errs, validateVectorMappings(inv.Vectors, mapping.Vectors, fields)...)
+		errs = append(errs, validateSparseVectorMappings(inv.SparseVectors, mapping.SparseVectors, fields)...)
 	}
-	errs = append(errs, validatePayloadMapping(mapping.Payload)...)
+	errs = append(errs, validatePayloadMapping(inv, mapping.Payload, fields)...)
 
 	return errors.Join(errs...)
 }
 
-func validateIDMapping(ids IDMapping) []error {
+func validateIDMapping(ids IDMapping, fields *fieldRegistry) []error {
+	var errs []error
 	targetField := ids.TargetField
 	if targetField == "" {
 		targetField = "id"
 	}
 	if strings.Contains(targetField, ".") {
-		return []error{fmt.Errorf("id target field %q contains '.', which LambdaDB field names do not support", targetField)}
+		errs = append(errs, fmt.Errorf("id target field %q contains '.', which LambdaDB field names do not support", targetField))
+	} else {
+		errs = append(errs, fields.add(targetField, "document id")...)
 	}
 	if ids.CopyOriginalTo != "" && strings.Contains(ids.CopyOriginalTo, ".") {
-		return []error{fmt.Errorf("id copyOriginalTo field %q contains '.', which LambdaDB field names do not support", ids.CopyOriginalTo)}
+		errs = append(errs, fmt.Errorf("id copyOriginalTo field %q contains '.', which LambdaDB field names do not support", ids.CopyOriginalTo))
+	} else if ids.CopyOriginalTo != "" {
+		errs = append(errs, fields.add(ids.CopyOriginalTo, "copied source id")...)
 	}
-	return nil
+	return errs
 }
 
-func validateVectorMappings(inventory map[string]source.VectorField, mappings map[string]VectorMapping) []error {
+func validateVectorMappings(inventory map[string]source.VectorField, mappings map[string]VectorMapping, fields *fieldRegistry) []error {
 	var errs []error
 	for sourceName, vector := range inventory {
 		mapping, ok := mappings[sourceName]
@@ -60,6 +66,9 @@ func validateVectorMappings(inventory map[string]source.VectorField, mappings ma
 			continue
 		}
 		errs = append(errs, validateVectorMapping(sourceName, vector, mapping)...)
+		if mapping.TargetField != "" && !strings.Contains(mapping.TargetField, ".") {
+			errs = append(errs, fields.add(mapping.TargetField, fmt.Sprintf("vector %q", displaySourceField(sourceName)))...)
+		}
 	}
 	for sourceName := range mappings {
 		if _, ok := inventory[sourceName]; !ok {
@@ -91,7 +100,7 @@ func validateVectorMapping(sourceName string, vector source.VectorField, mapping
 	return errs
 }
 
-func validateSparseVectorMappings(inventory map[string]source.SparseVectorField, mappings map[string]SparseVectorMapping) []error {
+func validateSparseVectorMappings(inventory map[string]source.SparseVectorField, mappings map[string]SparseVectorMapping, fields *fieldRegistry) []error {
 	var errs []error
 	for sourceName := range inventory {
 		mapping, ok := mappings[sourceName]
@@ -103,6 +112,8 @@ func validateSparseVectorMappings(inventory map[string]source.SparseVectorField,
 			errs = append(errs, fmt.Errorf("sparse vector %q targetField is required", displaySourceField(sourceName)))
 		} else if strings.Contains(mapping.TargetField, ".") {
 			errs = append(errs, fmt.Errorf("sparse vector %q targetField %q contains '.', which LambdaDB field names do not support", displaySourceField(sourceName), mapping.TargetField))
+		} else {
+			errs = append(errs, fields.add(mapping.TargetField, fmt.Sprintf("sparse vector %q", displaySourceField(sourceName)))...)
 		}
 	}
 	for sourceName := range mappings {
@@ -113,18 +124,32 @@ func validateSparseVectorMappings(inventory map[string]source.SparseVectorField,
 	return errs
 }
 
-func validatePayloadMapping(payload PayloadMapping) []error {
+func validatePayloadMapping(inv *source.Inventory, payload PayloadMapping, fields *fieldRegistry) []error {
 	var errs []error
 	for sourceField, targetField := range payload.Rename {
 		if targetField == "" {
 			errs = append(errs, fmt.Errorf("payload rename for %q has empty target field", sourceField))
 		} else if strings.Contains(targetField, ".") {
 			errs = append(errs, fmt.Errorf("payload rename for %q targets %q, which contains '.'", sourceField, targetField))
+		} else {
+			errs = append(errs, fields.add(targetField, fmt.Sprintf("payload field %q", sourceField))...)
+		}
+	}
+	if inv != nil {
+		for sourceField := range inv.PayloadIndexes {
+			targetField := PayloadTargetField(sourceField, payload.Rename)
+			if strings.Contains(targetField, ".") {
+				errs = append(errs, fmt.Errorf("payload field %q targets %q, which contains '.'", sourceField, targetField))
+				continue
+			}
+			errs = append(errs, fields.add(targetField, fmt.Sprintf("payload field %q", sourceField))...)
 		}
 	}
 	for field, index := range payload.IndexConfigs {
 		if strings.Contains(field, ".") {
 			errs = append(errs, fmt.Errorf("payload index field %q contains '.', rename it before creating a LambdaDB index", field))
+		} else {
+			errs = append(errs, fields.addPayloadIndex(field)...)
 		}
 		typ, _ := index["type"].(string)
 		if !isSupportedPayloadIndexType(typ) {
@@ -197,4 +222,36 @@ func displaySourceField(value string) string {
 		return "<unnamed>"
 	}
 	return value
+}
+
+type fieldRegistry struct {
+	fields map[string]string
+}
+
+func newFieldRegistry() *fieldRegistry {
+	return &fieldRegistry{fields: map[string]string{}}
+}
+
+func (r *fieldRegistry) add(field, source string) []error {
+	if field == "" {
+		return nil
+	}
+	if existing, ok := r.fields[field]; ok {
+		if existing == source {
+			return nil
+		}
+		return []error{fmt.Errorf("field name collision: %s and %s both target %q", existing, source, field)}
+	}
+	r.fields[field] = source
+	return nil
+}
+
+func (r *fieldRegistry) addPayloadIndex(field string) []error {
+	if field == "" {
+		return nil
+	}
+	if existing, ok := r.fields[field]; ok && strings.HasPrefix(existing, "payload field ") {
+		return nil
+	}
+	return r.add(field, fmt.Sprintf("payload index %q", field))
 }

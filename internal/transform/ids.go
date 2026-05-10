@@ -39,17 +39,21 @@ func RecordToDocumentWithMapping(record source.Record, mapping config.MappingCon
 	}
 
 	doc := make(map[string]any, len(record.Payload)+len(record.Vectors)+2)
-	doc[idField] = record.ID
+	origins := map[string]string{}
+	if err := setDocumentField(doc, origins, idField, record.ID, "document id"); err != nil {
+		return nil, err
+	}
 	if mapping.IDs.CopyOriginalTo != "" && mapping.IDs.CopyOriginalTo != idField {
-		doc[mapping.IDs.CopyOriginalTo] = record.ID
+		if err := setDocumentField(doc, origins, mapping.IDs.CopyOriginalTo, record.ID, "copied source id"); err != nil {
+			return nil, err
+		}
 	}
 
 	for key, value := range record.Payload {
-		targetKey := key
-		if renamed, ok := mapping.Payload.Rename[key]; ok {
-			targetKey = renamed
+		targetKey := config.PayloadTargetField(key, mapping.Payload.Rename)
+		if err := setDocumentField(doc, origins, targetKey, value, fmt.Sprintf("payload field %q", key)); err != nil {
+			return nil, err
 		}
-		doc[targetKey] = value
 	}
 
 	for sourceName, vector := range record.Vectors {
@@ -58,7 +62,9 @@ func RecordToDocumentWithMapping(record source.Record, mapping config.MappingCon
 			if err != nil {
 				return nil, err
 			}
-			doc[targetName] = vector.Dense
+			if err := setDocumentField(doc, origins, targetName, vector.Dense, fmt.Sprintf("vector %q", displaySourceName(sourceName))); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		if vector.Sparse != nil {
@@ -66,7 +72,9 @@ func RecordToDocumentWithMapping(record source.Record, mapping config.MappingCon
 			if err != nil {
 				return nil, err
 			}
-			doc[targetName] = vector.Sparse
+			if err := setDocumentField(doc, origins, targetName, vector.Sparse, fmt.Sprintf("sparse vector %q", displaySourceName(sourceName))); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		if vector.Multi != nil {
@@ -75,6 +83,15 @@ func RecordToDocumentWithMapping(record source.Record, mapping config.MappingCon
 	}
 
 	return doc, nil
+}
+
+func setDocumentField(doc map[string]any, origins map[string]string, key string, value any, origin string) error {
+	if existing, ok := origins[key]; ok {
+		return fmt.Errorf("field name collision: %s and %s both target %q", existing, origin, key)
+	}
+	doc[key] = value
+	origins[key] = origin
+	return nil
 }
 
 func denseVectorTarget(sourceName string, mapping config.MappingConfig) (string, error) {
@@ -95,4 +112,11 @@ func sparseVectorTarget(sourceName string, mapping config.MappingConfig) (string
 		return sourceName, nil
 	}
 	return "", fmt.Errorf("no sparse vector mapping for unnamed source vector")
+}
+
+func displaySourceName(value string) string {
+	if value == "" {
+		return "<unnamed>"
+	}
+	return value
 }

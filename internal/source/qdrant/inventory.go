@@ -6,6 +6,7 @@ import (
 
 	qdrantapi "github.com/qdrant/go-client/qdrant"
 
+	"github.com/lambdadb/lambdadb-migration/internal/config"
 	"github.com/lambdadb/lambdadb-migration/internal/source"
 )
 
@@ -35,10 +36,20 @@ func (s *Source) Inventory(ctx context.Context) (*source.Inventory, error) {
 		addSparseVectorConfig(inv, params.GetSparseVectorsConfig())
 	}
 
+	normalizedPayloadFields := map[string]string{}
 	for name, schema := range info.GetPayloadSchema() {
 		inv.PayloadIndexes[name] = source.PayloadIndex{
 			Name: name,
 			Type: mapPayloadType(schema.GetDataType()),
+		}
+		normalized := config.NormalizeFieldName(name)
+		if normalized != name {
+			inv.Warnings = append(inv.Warnings, fmt.Sprintf("payload field %q contains '.', suggested LambdaDB field name is %q", name, normalized))
+		}
+		if previous, ok := normalizedPayloadFields[normalized]; ok && previous != name {
+			inv.Warnings = append(inv.Warnings, fmt.Sprintf("payload fields %q and %q both normalize to %q; add explicit payload renames before migration", previous, name, normalized))
+		} else {
+			normalizedPayloadFields[normalized] = name
 		}
 	}
 
