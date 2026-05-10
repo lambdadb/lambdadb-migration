@@ -152,7 +152,7 @@ func TestQdrantToRealLambdaDBSmoke(t *testing.T) {
 			fixture:   largeDenseFixture(largeCount),
 			writeMode: config.WriteModeBulk,
 			batchSize: 17,
-			ids:       largeDenseIDs(largeCount),
+			ids:       largeDenseIDs(largeCount, 10),
 			assertDoc: func(doc map[string]any) error {
 				if err := requireLambdaDBDocField(doc, "dense"); err != nil {
 					return err
@@ -269,9 +269,12 @@ func waitForLambdaDBDocs(ctx context.Context, client *sdk.Client, collection str
 	}
 }
 
-func largeDenseIDs(count int) []string {
-	ids := make([]string, 0, count)
-	for i := 1; i <= count; i++ {
+func largeDenseIDs(count, limit int) []string {
+	if count < limit {
+		limit = count
+	}
+	ids := make([]string, 0, limit)
+	for i := 1; i <= limit; i++ {
 		ids = append(ids, strconv.Itoa(1000+i))
 	}
 	return ids

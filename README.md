@@ -49,6 +49,71 @@ go run . inventory qdrant \
 
 `inventory qdrant` writes YAML for `.yaml`/`.yml` outputs and JSON otherwise. `--mapping-file` accepts either JSON or YAML, as a direct mapping object or as the wrapped output produced by `inventory qdrant`.
 
+## Qdrant Migration Examples
+
+Migrate an unnamed dense-vector collection using the generated mapping:
+
+```bash
+go run . qdrant \
+  --qdrant.url http://localhost:6334 \
+  --qdrant.collection articles \
+  --lambdadb.project-name playground \
+  --lambdadb.api-key "$LAMBDADB_PROJECT_API_KEY" \
+  --lambdadb.collection articles \
+  --migration.write-mode bulk \
+  --migration.validate \
+  --migration.validation-report validation-report.json
+```
+
+For named vectors, generate an inventory first and review the generated `vectors` mapping:
+
+```yaml
+vectors:
+  title_dense:
+    targetField: title_dense
+    dimensions: 384
+    similarity: cosine
+  body_dense:
+    targetField: body_dense
+    dimensions: 768
+    similarity: dot_product
+```
+
+Then run with the mapping file:
+
+```bash
+go run . qdrant \
+  --qdrant.url http://localhost:6334 \
+  --qdrant.collection articles_named \
+  --lambdadb.project-name playground \
+  --lambdadb.api-key "$LAMBDADB_PROJECT_API_KEY" \
+  --lambdadb.collection articles_named \
+  --mapping-file qdrant-inventory.yaml \
+  --migration.validate
+```
+
+For hybrid-style dense plus sparse data, keep both vector mappings and indexed payload fields explicit:
+
+```yaml
+vectors:
+  body_dense:
+    targetField: body_dense
+    dimensions: 768
+    similarity: cosine
+sparseVectors:
+  keywords_sparse:
+    targetField: keywords_sparse
+payload:
+  mode: flatten
+  indexConfigs:
+    category:
+      type: keyword
+    views:
+      type: long
+```
+
+Use `--migration.query-overlap` when you want validation to compare dense-vector nearest-neighbor results between Qdrant and LambdaDB.
+
 ## Integration Test Fixture
 
 Start local Qdrant, then run the gated integration test:

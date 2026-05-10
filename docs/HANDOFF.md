@@ -390,7 +390,7 @@ Notes from the real E2E:
 - The smoke test now runs with `--migration.validate`, which verifies migrated docs with strongly consistent `Fetch` by ID instead of relying on `numDocs`; `numDocs` has stayed at 0 even though writes were accepted and fetched successfully.
 - The unnamed dense real smoke case also runs `--migration.query-overlap` and passed with average overlap 1.000.
 - The real smoke suite now covers unnamed dense upsert, named dense upsert, dense+sparse payload-index upsert, additional payload index types, unnamed dense bulk write mode, and a larger dense bulk fixture.
-- Bulk write mode passed but can take longer before strongly consistent fetch sees the documents; latest small bulk case took about 96 seconds and the larger 64-document bulk case took about 53 seconds.
+- Bulk write mode passed but can take longer before strongly consistent fetch sees the documents; latest small bulk case took about 96 seconds, the larger 64-document bulk case took about 53 seconds, and a targeted 250-document larger bulk run passed in about 54 seconds after the fetch-limit test fix.
 - The test creates unique target collections with short names and deletes them during cleanup.
 - Do not commit LambdaDB credentials. `.env`, `.env.*`, and `.env.local` are ignored by git.
 
@@ -479,6 +479,10 @@ Added `Dockerfile`, `.dockerignore`, `.goreleaser.yml`, and README install/build
 
 `.github/workflows/ci.yml` runs `go test ./...`, Docker build plus image smoke test, and GoReleaser snapshot on pull requests and pushes to `main`.
 
+### Release Publishing Added
+
+`.github/workflows/release.yml` publishes GoReleaser artifacts on `v*` tag pushes using `GITHUB_TOKEN`. The repository still has no remote configured locally, so the workflow has not run on GitHub yet.
+
 ### Integration Coverage Is Better But Still Small
 
 There is now a gated integration test using local Qdrant plus an in-process LambdaDB mock server:
@@ -506,15 +510,15 @@ This gated integration test passed against the local Docker Qdrant fixture in th
 
 There is also a real LambdaDB smoke suite gated by `LAMBDADB_MIGRATION_RUN_REAL_E2E=1`.
 
-Remaining integration risk: controlled failure/retry behavior is still mock-only, and real-service tests still use a modest 64-document default for the larger bulk fixture unless `LAMBDADB_MIGRATION_REAL_LARGE_COUNT` is raised.
+Remaining integration risk: controlled failure/retry behavior is still mock-only, and the heavier live bulk run has been tested at 250 documents but not at substantially larger customer-scale volumes.
 
 ## Suggested Next Work Order
 
-1. Raise `LAMBDADB_MIGRATION_REAL_LARGE_COUNT` for a heavier live bulk test when API cost/time is acceptable.
-2. Consider adding a real-service controlled failure fixture if LambdaDB exposes a safe way to simulate 429/5xx.
-3. Add release publishing automation after the repository remote and release process are finalized.
-4. Add more README examples for dense, named vector, and hybrid-style migrations.
-5. Extend query overlap validation to sparse, hybrid, and filter-heavy queries if needed.
+1. Consider adding a real-service controlled failure fixture if LambdaDB exposes a safe way to simulate 429/5xx.
+2. Run the GitHub Actions CI/release workflows after a remote is configured.
+3. Try a larger live bulk run beyond 250 documents when API cost/time is acceptable.
+4. Extend query overlap validation to sparse, hybrid, and filter-heavy queries if needed.
+5. Add more source implementations from the roadmap, starting with Pinecone or Chroma.
 
 ## Files To Read First In The Next Session
 
