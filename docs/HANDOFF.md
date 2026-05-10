@@ -79,6 +79,10 @@ The architecture intentionally does not fork Qdrant's repository as-is. It uses 
 │   └── HANDOFF.md
 ├── go.mod
 ├── go.sum
+├── integration_tests/
+│   ├── compose/
+│   │   └── qdrant.yaml
+│   └── qdrant_to_lambdadb_test.go
 ├── internal/
 │   ├── checkpoint/
 │   │   ├── file_store.go
@@ -303,6 +307,8 @@ go run . qdrant --help
 Latest `go test ./...` result:
 
 ```text
+ok   github.com/lambdadb/lambdadb-migration/cmd
+ok   github.com/lambdadb/lambdadb-migration/integration_tests
 ok   github.com/lambdadb/lambdadb-migration/internal/checkpoint
 ok   github.com/lambdadb/lambdadb-migration/internal/config
 ok   github.com/lambdadb/lambdadb-migration/internal/source/qdrant
@@ -408,9 +414,18 @@ Need:
 - goreleaser or release workflow
 - README install instructions
 
-### No Integration Test Fixture Yet
+### Integration Coverage Is Still Thin
 
-Need local Qdrant fixture and LambdaDB mock server.
+There is now a gated integration test using local Qdrant plus an in-process LambdaDB mock server:
+
+```bash
+docker compose -f integration_tests/compose/qdrant.yaml up -d
+LAMBDADB_MIGRATION_RUN_INTEGRATION=1 go test ./integration_tests -run TestQdrantToLambdaDBMockIntegration -count=1
+```
+
+Current fixture covers a single dense-vector collection with payload field-name normalization. More fixture coverage is still needed.
+
+Note: `docker compose -f integration_tests/compose/qdrant.yaml up -d` was attempted in this workspace, but the Qdrant image pull stalled and was interrupted. The gated integration test has been compile-verified and defaults to skipped unless `LAMBDADB_MIGRATION_RUN_INTEGRATION=1` is set.
 
 Suggested fixtures:
 
@@ -424,8 +439,8 @@ Suggested fixtures:
 
 ## Suggested Next Work Order
 
-1. Add Qdrant docker compose fixture and a LambdaDB mock server integration test.
-2. Run a real local Qdrant inventory test.
+1. Run a real local Qdrant inventory test.
+2. Add integration fixtures for named vectors, dense+sparse, payload indexes, Manhattan, and multi-vector cases.
 3. Run a controlled LambdaDB test project migration with a tiny dataset.
 4. Add progress output that is nicer than plain `accepted x/y`.
 
