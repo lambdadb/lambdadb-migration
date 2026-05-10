@@ -81,6 +81,8 @@ The architecture intentionally does not fork Qdrant's repository as-is. It uses 
 │   ├── config/
 │   │   ├── from_inventory.go
 │   │   ├── mapping.go
+│   │   ├── mapping_validation.go
+│   │   ├── mapping_validation_test.go
 │   │   ├── migration.go
 │   │   ├── migration_test.go
 │   │   ├── source.go
@@ -134,6 +136,16 @@ Implemented in `internal/config`:
 - `MigrationConfig`
 - `MappingConfig`
 - `MappingFromInventory`
+- `ValidateMapping`
+
+`ValidateMapping` currently checks:
+
+- target collection matches the CLI target collection
+- dense and sparse vector mappings exist for inventory fields
+- vector dimensions are positive, match source dimensions, and stay within LambdaDB's 4,096 dimension limit
+- vector similarities are supported before LambdaDB collection creation
+- payload index types and text analyzers are supported
+- target field names in the mapping do not contain dots
 
 Important CLI flags:
 
@@ -353,17 +365,6 @@ Need to add:
 - clear error messages
 - inventory warnings/suggested renames
 
-### Mapping Validation Is Thin
-
-Need validation before writing:
-
-- vector field mappings exist for all source vectors
-- dimensions are within LambdaDB limit
-- unsupported similarities rejected early
-- payload index types are valid
-- target collection in mapping matches CLI target collection or override rules are explicit
-- managed embeddings and bulk mode incompatibility
-
 ### LambdaDB Collection Creation Is Basic
 
 `EnsureCollection` builds index configs from mapping, but has not been verified with real LambdaDB API.
@@ -422,13 +423,12 @@ Suggested fixtures:
 
 ## Suggested Next Work Order
 
-1. Add mapping validation before collection creation/writes.
-2. Add field-name normalization and collision detection.
-3. Add YAML support or explicitly document JSON-only V1.
-4. Add Qdrant docker compose fixture and a LambdaDB mock server integration test.
-5. Run a real local Qdrant inventory test.
-6. Run a controlled LambdaDB test project migration with a tiny dataset.
-7. Add progress output that is nicer than plain `accepted x/y`.
+1. Add field-name normalization and collision detection.
+2. Add YAML support or explicitly document JSON-only V1.
+3. Add Qdrant docker compose fixture and a LambdaDB mock server integration test.
+4. Run a real local Qdrant inventory test.
+5. Run a controlled LambdaDB test project migration with a tiny dataset.
+6. Add progress output that is nicer than plain `accepted x/y`.
 
 ## Files To Read First In The Next Session
 
