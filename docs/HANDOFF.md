@@ -19,6 +19,7 @@ d087187 Fix checkpoint cursors and split write batches
 ca7906c Add migration mapping validation
 a807423 Normalize LambdaDB field names
 41be3d6 Support YAML mapping files
+98e423e Add Qdrant integration fixture
 ```
 
 ## Product Direction
