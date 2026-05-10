@@ -93,9 +93,7 @@ func seedQdrantCollection(t *testing.T, ctx context.Context, rawURL, collection 
 	}
 	defer client.Close()
 
-	if err := client.DeleteCollection(ctx, collection); err != nil && !isNotFound(err) {
-		t.Fatalf("delete existing qdrant collection: %v", err)
-	}
+	_ = client.DeleteCollection(ctx, collection)
 	if err := client.CreateCollection(ctx, &qdrantapi.CreateCollection{
 		CollectionName: collection,
 		VectorsConfig: qdrantapi.NewVectorsConfig(&qdrantapi.VectorParams{

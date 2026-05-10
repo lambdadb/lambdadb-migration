@@ -97,6 +97,9 @@ func vectorOutputToValue(vector *qdrantapi.VectorOutput) source.VectorValue {
 		}
 		return source.VectorValue{Multi: rows}
 	}
+	if data := vector.GetData(); len(data) > 0 {
+		return source.VectorValue{Dense: data}
+	}
 	return source.VectorValue{}
 }
 

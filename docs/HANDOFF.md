@@ -426,7 +426,7 @@ LAMBDADB_MIGRATION_RUN_INTEGRATION=1 go test ./integration_tests -run TestQdrant
 
 Current fixture covers a single dense-vector collection with payload field-name normalization. More fixture coverage is still needed.
 
-Note: `docker compose -f integration_tests/compose/qdrant.yaml up -d` was attempted in this workspace, but the Qdrant image pull stalled and was interrupted. The gated integration test has been compile-verified and defaults to skipped unless `LAMBDADB_MIGRATION_RUN_INTEGRATION=1` is set.
+This gated integration test passed against the local Docker Qdrant fixture in this workspace. It also caught and fixed real Qdrant scroll responses that return unnamed dense vectors through the deprecated `data` field instead of the newer `dense` oneof.
 
 Suggested fixtures:
 
@@ -440,10 +440,9 @@ Suggested fixtures:
 
 ## Suggested Next Work Order
 
-1. Run a real local Qdrant inventory test.
-2. Add integration fixtures for named vectors, dense+sparse, payload indexes, Manhattan, and multi-vector cases.
-3. Run a controlled LambdaDB test project migration with a tiny dataset.
-4. Add progress output that is nicer than plain `accepted x/y`.
+1. Add integration fixtures for named vectors, dense+sparse, payload indexes, Manhattan, and multi-vector cases.
+2. Run a controlled LambdaDB test project migration with a tiny dataset.
+3. Add progress output that is nicer than plain `accepted x/y`.
 
 ## Files To Read First In The Next Session
 

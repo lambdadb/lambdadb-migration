@@ -25,3 +25,12 @@ func TestSparseToMap(t *testing.T) {
 		t.Fatalf("sparse map = %#v", got)
 	}
 }
+
+func TestVectorOutputToValueSupportsDeprecatedDenseData(t *testing.T) {
+	got := vectorOutputToValue(&qdrantapi.VectorOutput{
+		Data: []float32{0.1, 0.2, 0.3},
+	})
+	if len(got.Dense) != 3 {
+		t.Fatalf("dense vector = %#v, want deprecated data values", got.Dense)
+	}
+}
