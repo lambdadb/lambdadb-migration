@@ -18,6 +18,7 @@ d087187 Fix checkpoint cursors and split write batches
 43f9d1c Update handoff after batch work
 ca7906c Add migration mapping validation
 a807423 Normalize LambdaDB field names
+41be3d6 Support YAML mapping files
 ```
 
 ## Product Direction
