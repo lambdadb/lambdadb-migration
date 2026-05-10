@@ -90,6 +90,7 @@ The architecture intentionally does not fork Qdrant's repository as-is. It uses 
 │   └── HANDOFF.md
 ├── go.mod
 ├── go.sum
+├── install.sh
 ├── integration_tests/
 │   ├── compose/
 │   │   └── qdrant.yaml
@@ -475,6 +476,10 @@ LambdaDB writes now retry transient failures with bounded exponential backoff, c
 ### Docker And GoReleaser Snapshot Work
 
 Added `Dockerfile`, `.dockerignore`, `.goreleaser.yml`, and README install/build instructions. `docker build -t lambdadb-migration:dev .`, `docker run --rm lambdadb-migration:dev --help`, and `goreleaser release --snapshot --clean` passed locally. Snapshot artifacts were written under ignored `dist/`.
+
+### Installer Added
+
+`install.sh` installs the matching GitHub Release artifact for Linux/macOS amd64/arm64. It supports `--version`, `--install-dir`, `--repo`, `--no-verify`, and `--dry-run`. It verifies `checksums.txt` by default. The script has been syntax-checked and dry-run locally, but full download/install should be tested after the first GitHub Release exists.
 
 ### CI Added
 

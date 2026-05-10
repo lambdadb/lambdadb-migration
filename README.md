@@ -8,6 +8,26 @@ See [DESIGN.md](DESIGN.md) for the current architecture and implementation plan.
 
 ## Install / Build
 
+Install the latest release after the first GitHub release is published:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lambdadb/lambdadb-migration/main/install.sh | sh
+```
+
+Review the installer before running it:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/lambdadb/lambdadb-migration/main/install.sh
+less install.sh
+sh install.sh
+```
+
+Install a specific version or directory:
+
+```bash
+sh install.sh --version v0.1.0 --install-dir "$HOME/.local/bin"
+```
+
 Build a local binary:
 
 ```bash
