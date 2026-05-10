@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -207,6 +208,63 @@ func TestQdrantToLambdaDBMockIntegration(t *testing.T) {
 				tt.assertMock(t, mock)
 			}
 		})
+	}
+}
+
+func TestQdrantToLambdaDBCheckpointCleanup(t *testing.T) {
+	if os.Getenv("LAMBDADB_MIGRATION_RUN_INTEGRATION") != "1" {
+		t.Skip("set LAMBDADB_MIGRATION_RUN_INTEGRATION=1 and run Qdrant from integration_tests/compose/qdrant.yaml")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	qdrantURL := os.Getenv("LAMBDADB_MIGRATION_QDRANT_URL")
+	if qdrantURL == "" {
+		qdrantURL = "http://localhost:6334"
+	}
+
+	collection := fmt.Sprintf("lambdadb_migration_it_checkpoint_cleanup_%d", time.Now().UnixNano())
+	seedQdrantCollection(t, ctx, qdrantURL, collection, unnamedDenseFixture())
+
+	mock := newLambdaDBMock(t, "playground", "articles")
+	defer mock.server.Close()
+
+	checkpointDir := t.TempDir()
+	checkpointPath := filepath.Join(checkpointDir, "qdrant", collection, "playground", "articles.json")
+
+	cmd := migrationcmd.MigrateQdrantCmd{
+		Qdrant: config.QdrantConfig{
+			URL:            qdrantURL,
+			Collection:     collection,
+			MaxMessageSize: 32 * 1024 * 1024,
+		},
+		LambdaDB: config.LambdaDBConfig{
+			BaseURL:     mock.server.URL,
+			ProjectName: "playground",
+			APIKey:      "test-key",
+			Collection:  "articles",
+		},
+		Migration: config.MigrationConfig{
+			BatchSize:            2,
+			MaxBatchBytes:        6_000_000,
+			WriteMode:            config.WriteModeUpsert,
+			Restart:              true,
+			CreateCollection:     true,
+			Validate:             true,
+			ValidationSampleSize: 2,
+			CheckpointPath:       checkpointDir,
+			CleanupCheckpoint:    true,
+			RetryMaxAttempts:     5,
+			RetryMaxDelayMS:      1,
+		},
+	}
+	if err := cmd.Run(&migrationcmd.Globals{}); err != nil {
+		t.Fatalf("migration Run() error = %v", err)
+	}
+	requireDocCount(t, mock.docs(), 2)
+	if _, err := os.Stat(checkpointPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("checkpoint path %q stat error = %v, want not exist", checkpointPath, err)
 	}
 }
 

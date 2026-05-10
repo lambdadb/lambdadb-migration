@@ -447,9 +447,9 @@ A Qdrant-to-real-LambdaDB smoke suite has passed against the configured dev proj
 
 `EnsureCollection` builds index configs from mapping and now waits for `ACTIVE` after creation. It has been real-service smoke-tested with unnamed dense, named dense, sparse vector, keyword, long, text, double, datetime, boolean, and object index configs.
 
-### Checkpoint Cleanup Implemented But Lightly Tested
+### Checkpoint Cleanup Implemented And Integration Tested
 
-Checkpoints are retained by default. `--migration.cleanup-checkpoint` deletes the local checkpoint after a successful migration and validation, but it does not yet have an end-to-end CLI test.
+Checkpoints are retained by default. `--migration.cleanup-checkpoint` deletes the local checkpoint after a successful migration and validation. `TestQdrantToLambdaDBCheckpointCleanup` covers this through the Qdrant-to-LambdaDB mock integration path.
 
 ### Retry/Backoff Is Configurable But Still Basic
 
@@ -470,6 +470,10 @@ LambdaDB writes now retry transient failures with bounded exponential backoff, c
 
 Added `Dockerfile`, `.dockerignore`, `.goreleaser.yml`, and README install/build instructions. `docker build -t lambdadb-migration:dev .`, `docker run --rm lambdadb-migration:dev --help`, and `goreleaser release --snapshot --clean` passed locally. Snapshot artifacts were written under ignored `dist/`.
 
+### CI Added
+
+`.github/workflows/ci.yml` runs `go test ./...`, Docker build plus image smoke test, and GoReleaser snapshot on pull requests and pushes to `main`.
+
 ### Integration Coverage Is Better But Still Small
 
 There is now a gated integration test using local Qdrant plus an in-process LambdaDB mock server:
@@ -487,6 +491,7 @@ Current fixtures cover:
 - Qdrant payload indexes
 - additional payload index types: text, double, datetime, boolean, object
 - transient LambdaDB write retry using controlled HTTP 503 responses
+- checkpoint cleanup after successful validation
 - Manhattan distance rejection
 - multi-vector rejection
 
@@ -500,9 +505,9 @@ Remaining integration risk: controlled failure/retry behavior is still mock-only
 
 1. Add a structured validation report if this needs to be customer-facing.
 2. Add query overlap validation if search equivalence becomes a migration acceptance criterion.
-3. Add an end-to-end checkpoint cleanup test.
-4. Raise `LAMBDADB_MIGRATION_REAL_LARGE_COUNT` for a heavier live bulk test when API cost/time is acceptable.
-5. Add CI jobs for `go test`, Docker build, and GoReleaser snapshot.
+3. Raise `LAMBDADB_MIGRATION_REAL_LARGE_COUNT` for a heavier live bulk test when API cost/time is acceptable.
+4. Consider adding a real-service controlled failure fixture if LambdaDB exposes a safe way to simulate 429/5xx.
+5. Add release publishing automation after the repository remote and release process are finalized.
 
 ## Files To Read First In The Next Session
 
