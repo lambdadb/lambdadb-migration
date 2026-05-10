@@ -10,12 +10,10 @@ This document records the current implementation state so work can continue in a
 /Users/steven/Dev/lambdadb-migration
 ```
 
-The folder is currently **not a git repository**. Initialize git when ready:
+The folder is now a git repository. Baseline scaffold commit:
 
 ```bash
-git init
-git add .
-git commit -m "Initial LambdaDB migration scaffold"
+5762535 Initial LambdaDB migration scaffold
 ```
 
 ## Product Direction
@@ -91,12 +89,15 @@ The architecture intentionally does not fork Qdrant's repository as-is. It uses 
 │   ├── source/
 │   │   ├── qdrant/
 │   │   │   ├── client.go
+│   │   │   ├── cursor_test.go
 │   │   │   ├── inventory.go
 │   │   │   ├── record.go
 │   │   │   └── record_test.go
 │   │   └── source.go
 │   ├── target/
 │   │   └── lambdadb/
+│   │       ├── batch.go
+│   │       ├── batch_test.go
 │   │       ├── client.go
 │   │       ├── schema.go
 │   │       └── schema_test.go
@@ -205,6 +206,8 @@ Implemented in `internal/target/lambdadb`:
 
 - bulk mode: `Collection(...).Docs().BulkUpsertDocuments`
 - upsert mode: `Collection(...).Docs().Upsert`
+- migration writes are split by serialized `{"docs":[...]}` JSON byte size before calling LambdaDB
+- regular upsert is capped at 6 MB per request and bulk upsert at 200 MB per request
 
 `EnsureCollection`:
 
@@ -236,6 +239,8 @@ Implemented in `internal/checkpoint`:
 - `Store` interface
 - `FileStore`
 - JSON checkpoint save/load/delete
+- checkpoint loads use `json.Decoder.UseNumber` so legacy numeric cursor JSON does not lose uint64 precision
+- Qdrant numeric scroll cursors are saved as decimal strings
 
 Default checkpoint directory:
 
@@ -327,17 +332,6 @@ Note: `--mapping-file` currently accepts either a direct `MappingConfig` JSON ob
 
 The code compiles and unit tests pass, but no Qdrant/LambdaDB end-to-end migration has been run yet in this workspace.
 
-### No Batch Byte Splitting Yet
-
-`--migration.max-batch-bytes` exists but is not enforced. Current migration writes one LambdaDB request per Qdrant scroll batch. This can exceed LambdaDB limits.
-
-Need to implement:
-
-- JSON byte-size estimator
-- split docs by max bytes
-- detect single-doc over limit
-- distinguish 6 MB regular upsert limit vs 200 MB bulk upsert limit
-
 ### YAML Mapping Not Implemented
 
 Design mentions JSON/YAML. Current code only reads JSON.
@@ -379,18 +373,6 @@ Check especially:
 - sparse vector index config shape
 - `ResourceNotFoundError` handling from SDK
 - text analyzer JSON shape
-
-### Checkpoint Cursor JSON Type Handling
-
-Qdrant cursor is stored as `map[string]any{"num": uint64}` or `{"uuid": string}`. JSON reload converts numbers to `float64`, and code handles `float64`, but very large uint64 IDs could lose precision.
-
-Fix options:
-
-- store numeric IDs as strings
-- use a typed cursor struct
-- custom JSON decoder with `UseNumber`
-
-Recommended: use typed cursor with `num` as string.
 
 ### Checkpoint Cleanup Not Implemented
 
@@ -439,16 +421,14 @@ Suggested fixtures:
 
 ## Suggested Next Work Order
 
-1. Initialize git and commit current baseline.
-2. Fix checkpoint cursor precision by storing Qdrant numeric cursor IDs as strings.
-3. Add batch splitting by JSON byte size.
-4. Add mapping validation before collection creation/writes.
-5. Add field-name normalization and collision detection.
-6. Add YAML support or explicitly document JSON-only V1.
-7. Add Qdrant docker compose fixture and a LambdaDB mock server integration test.
-8. Run a real local Qdrant inventory test.
-9. Run a controlled LambdaDB test project migration with a tiny dataset.
-10. Add progress output that is nicer than plain `accepted x/y`.
+1. Commit the checkpoint cursor and batch-splitting changes.
+2. Add mapping validation before collection creation/writes.
+3. Add field-name normalization and collision detection.
+4. Add YAML support or explicitly document JSON-only V1.
+5. Add Qdrant docker compose fixture and a LambdaDB mock server integration test.
+6. Run a real local Qdrant inventory test.
+7. Run a controlled LambdaDB test project migration with a tiny dataset.
+8. Add progress output that is nicer than plain `accepted x/y`.
 
 ## Files To Read First In The Next Session
 

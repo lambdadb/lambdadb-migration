@@ -3,6 +3,7 @@ package qdrant
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -17,6 +18,11 @@ import (
 type Source struct {
 	cfg    config.QdrantConfig
 	client *qdrantapi.Client
+}
+
+type cursorValue struct {
+	Num  string `json:"num,omitempty"`
+	UUID string `json:"uuid,omitempty"`
 }
 
 func New(cfg config.QdrantConfig) (*Source, error) {
@@ -108,12 +114,32 @@ func cursorToPointID(cursor source.Cursor) (*qdrantapi.PointId, error) {
 	if id, ok := cursor.Value.(*qdrantapi.PointId); ok {
 		return id, nil
 	}
+	if value, ok := cursor.Value.(cursorValue); ok {
+		return cursorValueToPointID(value)
+	}
+	if value, ok := cursor.Value.(*cursorValue); ok {
+		return cursorValueToPointID(*value)
+	}
 	values, ok := cursor.Value.(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("unsupported qdrant cursor type %T", cursor.Value)
 	}
 	if uuid, ok := values["uuid"].(string); ok && uuid != "" {
 		return qdrantapi.NewIDUUID(uuid), nil
+	}
+	if num, ok := values["num"].(string); ok && num != "" {
+		parsed, err := strconv.ParseUint(num, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("parse qdrant numeric cursor %q: %w", num, err)
+		}
+		return qdrantapi.NewIDNum(parsed), nil
+	}
+	if num, ok := values["num"].(json.Number); ok {
+		parsed, err := strconv.ParseUint(num.String(), 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("parse qdrant numeric cursor %q: %w", num.String(), err)
+		}
+		return qdrantapi.NewIDNum(parsed), nil
 	}
 	if num, ok := values["num"].(float64); ok {
 		return qdrantapi.NewIDNum(uint64(num)), nil
@@ -124,11 +150,25 @@ func cursorToPointID(cursor source.Cursor) (*qdrantapi.PointId, error) {
 	return nil, fmt.Errorf("invalid qdrant cursor value")
 }
 
-func pointIDToCursor(id *qdrantapi.PointId) map[string]any {
-	if id.GetUuid() != "" {
-		return map[string]any{"uuid": id.GetUuid()}
+func cursorValueToPointID(value cursorValue) (*qdrantapi.PointId, error) {
+	if value.UUID != "" {
+		return qdrantapi.NewIDUUID(value.UUID), nil
 	}
-	return map[string]any{"num": id.GetNum()}
+	if value.Num != "" {
+		parsed, err := strconv.ParseUint(value.Num, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("parse qdrant numeric cursor %q: %w", value.Num, err)
+		}
+		return qdrantapi.NewIDNum(parsed), nil
+	}
+	return nil, fmt.Errorf("invalid qdrant cursor value")
+}
+
+func pointIDToCursor(id *qdrantapi.PointId) cursorValue {
+	if id.GetUuid() != "" {
+		return cursorValue{UUID: id.GetUuid()}
+	}
+	return cursorValue{Num: strconv.FormatUint(id.GetNum(), 10)}
 }
 
 func parseURL(raw string) (host string, port int, useTLS bool, err error) {

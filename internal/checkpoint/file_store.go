@@ -1,6 +1,7 @@
 package checkpoint
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -27,7 +28,9 @@ func (s *FileStore) Load(ctx context.Context, key string) (*Checkpoint, error) {
 		return nil, fmt.Errorf("read checkpoint: %w", err)
 	}
 	var cp Checkpoint
-	if err := json.Unmarshal(data, &cp); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&cp); err != nil {
 		return nil, fmt.Errorf("decode checkpoint: %w", err)
 	}
 	return &cp, nil

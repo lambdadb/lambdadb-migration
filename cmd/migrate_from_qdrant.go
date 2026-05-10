@@ -53,6 +53,7 @@ func (c *MigrateQdrantCmd) Run(globals *Globals) error {
 	if err := target.EnsureCollection(ctx, inv, mapping); err != nil {
 		return err
 	}
+	maxBatchBytes := targetlambdadb.EffectiveMaxBatchBytes(c.Migration.MaxBatchBytes, c.Migration.WriteMode)
 
 	store := checkpoint.NewFileStore(checkpointRoot(c.Migration.CheckpointPath))
 	key := checkpointKey(c.Qdrant.Collection, c.LambdaDB.ProjectName, c.LambdaDB.Collection)
@@ -87,8 +88,14 @@ func (c *MigrateQdrantCmd) Run(globals *Globals) error {
 			}
 			docs = append(docs, doc)
 		}
-		if err := target.Write(ctx, docs); err != nil {
+		writeBatches, err := targetlambdadb.SplitDocumentsByPayloadSize(docs, maxBatchBytes)
+		if err != nil {
 			return err
+		}
+		for _, writeBatch := range writeBatches {
+			if err := target.Write(ctx, writeBatch); err != nil {
+				return err
+			}
 		}
 
 		accepted += uint64(len(docs))
