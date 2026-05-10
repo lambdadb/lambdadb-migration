@@ -20,6 +20,7 @@ ca7906c Add migration mapping validation
 a807423 Normalize LambdaDB field names
 41be3d6 Support YAML mapping files
 98e423e Add Qdrant integration fixture
+196d62c Handle Qdrant legacy dense vector output
 ```
 
 ## Product Direction
