@@ -34,3 +34,30 @@ func TestVectorOutputToValueSupportsDeprecatedDenseData(t *testing.T) {
 		t.Fatalf("dense vector = %#v, want deprecated data values", got.Dense)
 	}
 }
+
+func TestVectorOutputToValueSupportsDeprecatedSparseData(t *testing.T) {
+	got := vectorOutputToValue(&qdrantapi.VectorOutput{
+		Data:    []float32{0.7, 0.2},
+		Indices: &qdrantapi.SparseIndices{Data: []uint32{3, 9}},
+	})
+	if got.Dense != nil {
+		t.Fatalf("dense vector = %#v, want sparse vector", got.Dense)
+	}
+	if got.Sparse["3"] != 0.7 || got.Sparse["9"] != 0.2 {
+		t.Fatalf("sparse vector = %#v, want deprecated sparse data", got.Sparse)
+	}
+}
+
+func TestVectorOutputToValueSupportsDeprecatedMultiData(t *testing.T) {
+	vectorCount := uint32(2)
+	got := vectorOutputToValue(&qdrantapi.VectorOutput{
+		Data:         []float32{0.1, 0.2, 0.3, 0.4},
+		VectorsCount: &vectorCount,
+	})
+	if got.Dense != nil {
+		t.Fatalf("dense vector = %#v, want multi-vector", got.Dense)
+	}
+	if len(got.Multi) != 2 || len(got.Multi[0]) != 2 || got.Multi[1][1] != 0.4 {
+		t.Fatalf("multi-vector = %#v, want deprecated multi-vector data", got.Multi)
+	}
+}

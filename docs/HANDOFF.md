@@ -197,6 +197,22 @@ Important CLI flags:
 --mapping-file
 ```
 
+`--migration.validate` now performs post-migration validation:
+
+- checks accepted record count against source inventory count
+- reads LambdaDB `numDocs` and reports it
+- fetches up to 10 migrated sample documents with strongly consistent reads
+- compares sampled fields, including dense vectors and sparse vectors
+
+Note: real LambdaDB smoke tests observed `numDocs=0` even after accepted writes, so `numDocs` is currently reported but not treated as the primary pass/fail signal. Sample fetch/field comparison is the stronger validation check.
+
+Migration progress output now includes accepted count, percent, batch size, rate, and elapsed time, for example:
+
+```text
+progress accepted=2/2 (100.0%) batch=2 rate=22.5 records/s elapsed=88ms
+migration complete accepted=2 target="articles" rate=22.5 records/s elapsed=88ms
+```
+
 ### Qdrant Source
 
 Implemented in `internal/source/qdrant`:
@@ -231,6 +247,7 @@ Record conversion currently handles:
 - dense vectors
 - sparse vectors
 - multi-vectors as `[][]float32` in neutral records, though later transform rejects them by default
+- legacy Qdrant vector outputs that encode dense, sparse, and multi-vector values through deprecated `data` fields
 
 ### LambdaDB Target
 
@@ -241,6 +258,7 @@ Implemented in `internal/target/lambdadb`:
 - `Write`
 - `Count`
 - converts migration mapping to LambdaDB `indexConfigs`
+- retries transient LambdaDB write failures with bounded exponential backoff
 
 `Write` supports:
 
@@ -248,6 +266,7 @@ Implemented in `internal/target/lambdadb`:
 - upsert mode: `Collection(...).Docs().Upsert`
 - migration writes are split by serialized `{"docs":[...]}` JSON byte size before calling LambdaDB
 - regular upsert is capped at 6 MB per request and bulk upsert at 200 MB per request
+- write retries currently cover HTTP 429, HTTP 5xx, LambdaDB internal-server errors, network timeouts, connection resets/refusals, and temporary bulk upload failures
 
 `EnsureCollection`:
 
@@ -309,14 +328,46 @@ go run . qdrant --help
 Latest `go test ./...` result:
 
 ```text
+?    github.com/lambdadb/lambdadb-migration [no test files]
 ok   github.com/lambdadb/lambdadb-migration/cmd
 ok   github.com/lambdadb/lambdadb-migration/integration_tests
 ok   github.com/lambdadb/lambdadb-migration/internal/checkpoint
 ok   github.com/lambdadb/lambdadb-migration/internal/config
+?    github.com/lambdadb/lambdadb-migration/internal/pipeline [no test files]
+?    github.com/lambdadb/lambdadb-migration/internal/source [no test files]
 ok   github.com/lambdadb/lambdadb-migration/internal/source/qdrant
 ok   github.com/lambdadb/lambdadb-migration/internal/target/lambdadb
 ok   github.com/lambdadb/lambdadb-migration/internal/transform
 ```
+
+Latest gated Qdrant integration result:
+
+```text
+docker compose -f integration_tests/compose/qdrant.yaml up -d
+LAMBDADB_MIGRATION_RUN_INTEGRATION=1 go test ./integration_tests -run TestQdrantToLambdaDBMockIntegration -count=1 -v
+PASS
+```
+
+Latest real LambdaDB smoke result:
+
+```text
+docker compose -f integration_tests/compose/qdrant.yaml up -d
+LAMBDADB_MIGRATION_RUN_REAL_E2E=1 \
+LAMBDADB_BASE_URL="https://aws-dev.lambdadb.ai" \
+LAMBDADB_PROJECT_NAME="steven-test" \
+LAMBDADB_PROJECT_API_KEY="$LAMBDADB_PROJECT_API_KEY" \
+go test ./integration_tests -run TestQdrantToRealLambdaDBSmoke -count=1 -v
+PASS
+```
+
+Notes from the real E2E:
+
+- LambdaDB collection creation is asynchronous. `EnsureCollection` now waits until the collection is `ACTIVE` before writing.
+- The smoke test now runs with `--migration.validate`, which verifies migrated docs with strongly consistent `Fetch` by ID instead of relying on `numDocs`; `numDocs` has stayed at 0 even though writes were accepted and fetched successfully.
+- The real smoke suite now covers unnamed dense upsert, named dense upsert, dense+sparse payload-index upsert, and unnamed dense bulk write mode.
+- Bulk write mode passed but can take longer before strongly consistent fetch sees the documents; latest run took about 93 seconds for the bulk case.
+- The test creates unique target collections with short names and deletes them during cleanup.
+- Do not commit LambdaDB credentials. `.env`, `.env.*`, and `.env.local` are ignored by git.
 
 ## Example Commands
 
@@ -370,13 +421,13 @@ Note: `inventory qdrant` writes YAML for `.yaml`/`.yml` outputs and JSON otherwi
 
 ## Known Gaps / Risks
 
-### Not Yet E2E Tested Against Real Services
+### Real E2E Smoke Tested, Broader Real-Service Coverage Still Needed
 
-The code compiles and unit tests pass, but no Qdrant/LambdaDB end-to-end migration has been run yet in this workspace.
+A Qdrant-to-real-LambdaDB smoke suite has passed against the `steven-test` dev project. Broader real-service coverage is still needed for larger batches and additional payload index types.
 
-### LambdaDB Collection Creation Is Basic
+### LambdaDB Collection Creation Needs More Real API Coverage
 
-`EnsureCollection` builds index configs from mapping, but has not been verified with real LambdaDB API.
+`EnsureCollection` builds index configs from mapping and now waits for `ACTIVE` after creation. It has been real-service smoke-tested with unnamed dense, named dense, sparse vector, and keyword/long payload index configs.
 
 Check especially:
 
@@ -389,13 +440,13 @@ Check especially:
 
 Checkpoints are retained after success. Design mentions cleanup only if user asks. No `--cleanup-checkpoint` flag yet.
 
-### No Retry/Backoff
+### Retry/Backoff Is Basic
 
-Current LambdaDB writes call SDK directly. Need retry handling for:
+LambdaDB writes now retry transient failures with bounded exponential backoff. Remaining gaps:
 
-- HTTP 429
-- transient network errors
-- bulk upload temporary failures
+- retry policy is not configurable from CLI flags
+- retry behavior is unit-tested but not exercised against a controlled real-service failure fixture
+- collection creation/get calls still rely mostly on SDK behavior plus the existing `ACTIVE` wait loop
 
 ### No Validation Command/Report Yet
 
@@ -416,7 +467,7 @@ Need:
 - goreleaser or release workflow
 - README install instructions
 
-### Integration Coverage Is Still Thin
+### Integration Coverage Is Better But Still Mock-Targeted
 
 There is now a gated integration test using local Qdrant plus an in-process LambdaDB mock server:
 
@@ -425,25 +476,26 @@ docker compose -f integration_tests/compose/qdrant.yaml up -d
 LAMBDADB_MIGRATION_RUN_INTEGRATION=1 go test ./integration_tests -run TestQdrantToLambdaDBMockIntegration -count=1
 ```
 
-Current fixture covers a single dense-vector collection with payload field-name normalization. More fixture coverage is still needed.
+Current fixtures cover:
 
-This gated integration test passed against the local Docker Qdrant fixture in this workspace. It also caught and fixed real Qdrant scroll responses that return unnamed dense vectors through the deprecated `data` field instead of the newer `dense` oneof.
-
-Suggested fixtures:
-
-- single dense vector
+- unnamed dense vector plus dotted payload field normalization
 - named dense vectors
-- dense + sparse
-- payload indexes
-- field names containing dots
-- Manhattan distance
-- multi-vector
+- dense + sparse vectors
+- Qdrant payload indexes
+- Manhattan distance rejection
+- multi-vector rejection
+
+This gated integration test passed against the local Docker Qdrant fixture in this workspace. It also caught and fixed real Qdrant scroll responses that return vector data through deprecated `data` fields instead of the newer typed oneofs.
+
+Remaining integration risk: real-service tests still use tiny two-document fixtures. Larger batches and controlled failure/retry behavior are not covered yet.
 
 ## Suggested Next Work Order
 
-1. Add integration fixtures for named vectors, dense+sparse, payload indexes, Manhattan, and multi-vector cases.
-2. Run a controlled LambdaDB test project migration with a tiny dataset.
-3. Add progress output that is nicer than plain `accepted x/y`.
+1. Add larger-batch real-service smoke coverage.
+2. Add configurable retry/backoff flags if needed after real usage.
+3. Add Dockerfile/release workflow and README install instructions.
+4. Add more payload index type fixtures.
+5. Add checkpoint cleanup option if desired.
 
 ## Files To Read First In The Next Session
 

@@ -84,21 +84,18 @@ func vectorsOutputToMap(vectors *qdrantapi.VectorsOutput) map[string]source.Vect
 }
 
 func vectorOutputToValue(vector *qdrantapi.VectorOutput) source.VectorValue {
-	if dense := vector.GetDense(); dense != nil {
-		return source.VectorValue{Dense: dense.GetData()}
-	}
-	if sparse := vector.GetSparse(); sparse != nil {
+	if sparse := vector.GetSparseVector(); sparse != nil {
 		return source.VectorValue{Sparse: sparseToMap(sparse)}
 	}
-	if multi := vector.GetMultiDense(); multi != nil {
+	if multi := vector.GetMultiVector(); multi != nil {
 		rows := make([][]float32, 0, len(multi.GetVectors()))
 		for _, row := range multi.GetVectors() {
 			rows = append(rows, row.GetData())
 		}
 		return source.VectorValue{Multi: rows}
 	}
-	if data := vector.GetData(); len(data) > 0 {
-		return source.VectorValue{Dense: data}
+	if dense := vector.GetDenseVector(); dense != nil {
+		return source.VectorValue{Dense: dense.GetData()}
 	}
 	return source.VectorValue{}
 }
