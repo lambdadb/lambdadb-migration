@@ -18,6 +18,7 @@ type MigrationConfig struct {
 	DryRun               bool      `help:"Inspect and validate without writing documents."`
 	Validate             bool      `help:"Run validation after migration."`
 	ValidationSampleSize int       `help:"Number of migrated sample documents to fetch during validation. Set to 0 for count-only validation." default:"10"`
+	ValidationReport     string    `help:"Write post-migration validation results to a JSON report file. Implies validation."`
 	CheckpointPath       string    `help:"Checkpoint directory. Defaults to .lambdadb-migration/checkpoints."`
 	CleanupCheckpoint    bool      `help:"Delete the migration checkpoint after a successful migration."`
 	BatchDelayMS         int       `help:"Delay between write batches in milliseconds." default:"0"`

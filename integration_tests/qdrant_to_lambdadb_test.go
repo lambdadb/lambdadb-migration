@@ -232,6 +232,7 @@ func TestQdrantToLambdaDBCheckpointCleanup(t *testing.T) {
 
 	checkpointDir := t.TempDir()
 	checkpointPath := filepath.Join(checkpointDir, "qdrant", collection, "playground", "articles.json")
+	reportPath := filepath.Join(checkpointDir, "validation", "report.json")
 
 	cmd := migrationcmd.MigrateQdrantCmd{
 		Qdrant: config.QdrantConfig{
@@ -253,6 +254,7 @@ func TestQdrantToLambdaDBCheckpointCleanup(t *testing.T) {
 			CreateCollection:     true,
 			Validate:             true,
 			ValidationSampleSize: 2,
+			ValidationReport:     reportPath,
 			CheckpointPath:       checkpointDir,
 			CleanupCheckpoint:    true,
 			RetryMaxAttempts:     5,
@@ -265,6 +267,22 @@ func TestQdrantToLambdaDBCheckpointCleanup(t *testing.T) {
 	requireDocCount(t, mock.docs(), 2)
 	if _, err := os.Stat(checkpointPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("checkpoint path %q stat error = %v, want not exist", checkpointPath, err)
+	}
+	data, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("read validation report: %v", err)
+	}
+	var report struct {
+		Status  string `json:"status"`
+		Samples struct {
+			Compared int `json:"compared"`
+		} `json:"samples"`
+	}
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatalf("decode validation report: %v", err)
+	}
+	if report.Status != "pass" || report.Samples.Compared != 2 {
+		t.Fatalf("validation report = %#v, want pass with 2 compared samples", report)
 	}
 }
 

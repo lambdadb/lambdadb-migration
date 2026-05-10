@@ -89,10 +89,13 @@ Useful migration safety flags:
 
 ```text
 --migration.validation-sample-size 10
+--migration.validation-report validation-report.json
 --migration.retry-max-attempts 5
 --migration.retry-initial-delay-ms 500
 --migration.retry-max-delay-ms 5000
 --migration.cleanup-checkpoint
 ```
+
+`--migration.validation-report` writes a JSON report with pass/fail status, source and accepted counts, LambdaDB `numDocs`, sampled document IDs, compared sample count, and validation errors. Setting it also enables validation.
 
 Migration progress is written to stderr with accepted count, percent, batch size, rate, and elapsed time.

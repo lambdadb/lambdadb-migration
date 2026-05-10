@@ -73,6 +73,7 @@ func (c *MigrateQdrantCmd) Run(globals *Globals) error {
 	key := checkpointKey(c.Qdrant.Collection, c.LambdaDB.ProjectName, c.LambdaDB.Collection)
 	var cursorValue any
 	var accepted uint64
+	shouldValidate := c.Migration.Validate || c.Migration.ValidationReport != ""
 	sampleLimit := c.Migration.ValidationSampleSize
 	samples := make([]map[string]any, 0, sampleLimit)
 	startedAt := time.Now()
@@ -105,7 +106,7 @@ func (c *MigrateQdrantCmd) Run(globals *Globals) error {
 				return err
 			}
 			docs = append(docs, doc)
-			if c.Migration.Validate && len(samples) < sampleLimit {
+			if shouldValidate && len(samples) < sampleLimit {
 				samples = append(samples, cloneDocument(doc))
 			}
 		}
@@ -144,9 +145,15 @@ func (c *MigrateQdrantCmd) Run(globals *Globals) error {
 	}
 
 	fmt.Fprintln(os.Stderr, progress.CompleteLine(accepted, c.LambdaDB.Collection, time.Now()))
-	if c.Migration.Validate {
-		if err := validateMigration(ctx, target, inv.RecordCount, accepted, samples, mapping); err != nil {
-			return err
+	if shouldValidate {
+		report, validationErr := validateMigration(ctx, target, inv.RecordCount, accepted, samples, mapping)
+		if c.Migration.ValidationReport != "" {
+			if err := writeValidationReport(c.Migration.ValidationReport, report); err != nil {
+				return errors.Join(validationErr, err)
+			}
+		}
+		if validationErr != nil {
+			return validationErr
 		}
 	}
 	if c.Migration.CleanupCheckpoint {
@@ -162,15 +169,45 @@ type validationTarget interface {
 	Fetch(context.Context, []string) ([]map[string]any, error)
 }
 
-func validateMigration(ctx context.Context, target validationTarget, sourceCount, accepted uint64, samples []map[string]any, mapping config.MappingConfig) error {
+type validationReport struct {
+	Status          string                 `json:"status"`
+	GeneratedAt     time.Time              `json:"generatedAt"`
+	SourceCount     uint64                 `json:"sourceCount"`
+	AcceptedRecords uint64                 `json:"acceptedRecords"`
+	LambdaDBNumDocs *uint64                `json:"lambdaDBNumDocs,omitempty"`
+	Samples         validationSampleReport `json:"samples"`
+	Errors          []string               `json:"errors,omitempty"`
+}
+
+type validationSampleReport struct {
+	Requested int      `json:"requested"`
+	Fetched   int      `json:"fetched"`
+	Compared  int      `json:"compared"`
+	Skipped   bool     `json:"skipped,omitempty"`
+	IDs       []string `json:"ids,omitempty"`
+}
+
+func validateMigration(ctx context.Context, target validationTarget, sourceCount, accepted uint64, samples []map[string]any, mapping config.MappingConfig) (validationReport, error) {
 	var errs []error
+	report := validationReport{
+		Status:          "pass",
+		GeneratedAt:     time.Now().UTC(),
+		SourceCount:     sourceCount,
+		AcceptedRecords: accepted,
+	}
+	addErr := func(err error) {
+		errs = append(errs, err)
+		report.Errors = append(report.Errors, err.Error())
+	}
+
 	if accepted != sourceCount {
-		errs = append(errs, fmt.Errorf("accepted %d records but source inventory reported %d", accepted, sourceCount))
+		addErr(fmt.Errorf("accepted %d records but source inventory reported %d", accepted, sourceCount))
 	}
 
 	if count, err := target.Count(ctx); err != nil {
-		errs = append(errs, fmt.Errorf("read LambdaDB collection count: %w", err))
+		addErr(fmt.Errorf("read LambdaDB collection count: %w", err))
 	} else {
+		report.LambdaDBNumDocs = &count
 		fmt.Fprintf(os.Stderr, "validation LambdaDB numDocs=%d accepted=%d source=%d\n", count, accepted, sourceCount)
 	}
 
@@ -178,7 +215,8 @@ func validateMigration(ctx context.Context, target validationTarget, sourceCount
 		if accepted > 0 {
 			fmt.Fprintln(os.Stderr, "validation sample fetch skipped")
 		}
-		return errors.Join(errs...)
+		report.Samples.Skipped = true
+		return finishValidationReport(report, errs)
 	}
 
 	idField := mapping.IDs.TargetField
@@ -190,21 +228,24 @@ func validateMigration(ctx context.Context, target validationTarget, sourceCount
 	for _, sample := range samples {
 		id, ok := sample[idField].(string)
 		if !ok || id == "" {
-			errs = append(errs, fmt.Errorf("sample document has non-string id field %q: %#v", idField, sample[idField]))
+			addErr(fmt.Errorf("sample document has non-string id field %q: %#v", idField, sample[idField]))
 			continue
 		}
 		ids = append(ids, id)
 		expectedByID[id] = sample
 	}
+	report.Samples.Requested = len(ids)
+	report.Samples.IDs = ids
 	if len(ids) == 0 {
-		return errors.Join(errs...)
+		return finishValidationReport(report, errs)
 	}
 
 	docs, err := waitForFetchedDocuments(ctx, target, ids)
 	if err != nil {
-		errs = append(errs, err)
-		return errors.Join(errs...)
+		addErr(err)
+		return finishValidationReport(report, errs)
 	}
+	report.Samples.Fetched = len(docs)
 	actualByID := map[string]map[string]any{}
 	for _, doc := range docs {
 		id, ok := doc[idField].(string)
@@ -216,17 +257,40 @@ func validateMigration(ctx context.Context, target validationTarget, sourceCount
 		expected := expectedByID[id]
 		actual, ok := actualByID[id]
 		if !ok {
-			errs = append(errs, fmt.Errorf("sample document %q was not returned by LambdaDB fetch", id))
+			addErr(fmt.Errorf("sample document %q was not returned by LambdaDB fetch", id))
 			continue
 		}
 		if err := compareSampleDocument(id, expected, actual); err != nil {
-			errs = append(errs, err)
+			addErr(err)
+			continue
 		}
+		report.Samples.Compared++
 	}
 	if len(errs) == 0 {
 		fmt.Fprintf(os.Stderr, "validation fetched and compared %d sample documents\n", len(ids))
 	}
-	return errors.Join(errs...)
+	return finishValidationReport(report, errs)
+}
+
+func finishValidationReport(report validationReport, errs []error) (validationReport, error) {
+	if len(errs) > 0 {
+		report.Status = "fail"
+	}
+	return report, errors.Join(errs...)
+}
+
+func writeValidationReport(path string, report validationReport) error {
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode validation report: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create validation report directory: %w", err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write validation report: %w", err)
+	}
+	return nil
 }
 
 func waitForFetchedDocuments(ctx context.Context, target validationTarget, ids []string) ([]map[string]any, error) {

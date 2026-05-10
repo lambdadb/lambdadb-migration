@@ -203,6 +203,7 @@ Important CLI flags:
 --migration.dry-run
 --migration.validate
 --migration.validation-sample-size
+--migration.validation-report
 --migration.checkpoint-path
 --migration.cleanup-checkpoint
 --migration.batch-delay-ms
@@ -218,6 +219,7 @@ Important CLI flags:
 - reads LambdaDB `numDocs` and reports it
 - fetches up to `--migration.validation-sample-size` migrated sample documents with strongly consistent reads
 - compares sampled fields, including dense vectors and sparse vectors
+- writes a structured JSON report when `--migration.validation-report` is set; the report includes status, counts, sampled IDs, compared count, and errors
 
 Note: real LambdaDB smoke tests observed `numDocs=0` even after accepted writes, so `numDocs` is currently reported but not treated as the primary pass/fail signal. Sample fetch/field comparison is the stronger validation check.
 
@@ -458,11 +460,10 @@ LambdaDB writes now retry transient failures with bounded exponential backoff, c
 - retry behavior is unit-tested and exercised against a controlled mock 503 fixture, but not against a controlled real-service failure fixture
 - collection creation/get calls still rely mostly on SDK behavior plus the existing `ACTIVE` wait loop
 
-### Validation Is Basic
+### Validation Has Fetch-Based Report
 
-`--migration.validate` now checks accepted count and compares configurable fetched sample documents. Remaining validation gaps:
+`--migration.validate` now checks accepted count and compares configurable fetched sample documents. `--migration.validation-report` writes a JSON report and implies validation. Remaining validation gaps:
 
-- validation output is plain stderr text, not a structured report
 - query overlap validation is not implemented
 - `numDocs` is reported but not used as a pass/fail signal because real smoke tests observed it staying at 0 after successful writes and fetches
 
@@ -492,6 +493,7 @@ Current fixtures cover:
 - additional payload index types: text, double, datetime, boolean, object
 - transient LambdaDB write retry using controlled HTTP 503 responses
 - checkpoint cleanup after successful validation
+- structured validation report creation
 - Manhattan distance rejection
 - multi-vector rejection
 
@@ -503,11 +505,11 @@ Remaining integration risk: controlled failure/retry behavior is still mock-only
 
 ## Suggested Next Work Order
 
-1. Add a structured validation report if this needs to be customer-facing.
-2. Add query overlap validation if search equivalence becomes a migration acceptance criterion.
-3. Raise `LAMBDADB_MIGRATION_REAL_LARGE_COUNT` for a heavier live bulk test when API cost/time is acceptable.
-4. Consider adding a real-service controlled failure fixture if LambdaDB exposes a safe way to simulate 429/5xx.
-5. Add release publishing automation after the repository remote and release process are finalized.
+1. Add query overlap validation if search equivalence becomes a migration acceptance criterion.
+2. Raise `LAMBDADB_MIGRATION_REAL_LARGE_COUNT` for a heavier live bulk test when API cost/time is acceptable.
+3. Consider adding a real-service controlled failure fixture if LambdaDB exposes a safe way to simulate 429/5xx.
+4. Add release publishing automation after the repository remote and release process are finalized.
+5. Add more README examples for dense, named vector, and hybrid-style migrations.
 
 ## Files To Read First In The Next Session
 
