@@ -72,6 +72,34 @@ func (s *Source) Count(ctx context.Context) (uint64, error) {
 	return count, nil
 }
 
+func (s *Source) SearchDense(ctx context.Context, vectorName string, vector []float32, limit int) ([]string, error) {
+	if limit < 1 {
+		return nil, fmt.Errorf("search limit must be greater than 0")
+	}
+	exact := true
+	var vectorNamePtr *string
+	if vectorName != "" {
+		vectorNamePtr = &vectorName
+	}
+	resp, err := s.client.GetPointsClient().Search(ctx, &qdrantapi.SearchPoints{
+		CollectionName: s.cfg.Collection,
+		Vector:         vector,
+		VectorName:     vectorNamePtr,
+		Limit:          uint64(limit),
+		WithPayload:    qdrantapi.NewWithPayload(false),
+		WithVectors:    qdrantapi.NewWithVectors(false),
+		Params:         &qdrantapi.SearchParams{Exact: &exact},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("search qdrant points: %w", err)
+	}
+	ids := make([]string, 0, len(resp.GetResult()))
+	for _, point := range resp.GetResult() {
+		ids = append(ids, pointIDToString(point.GetId()))
+	}
+	return ids, nil
+}
+
 func (s *Source) Read(ctx context.Context, cursor source.Cursor, limit int) (source.Batch, error) {
 	offset, err := cursorToPointID(cursor)
 	if err != nil {

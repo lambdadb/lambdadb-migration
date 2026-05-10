@@ -252,3 +252,33 @@ func (t *Target) Fetch(ctx context.Context, ids []string) ([]map[string]any, err
 	}
 	return docs, nil
 }
+
+func (t *Target) QueryKNN(ctx context.Context, idField, field string, vector []float32, limit int) ([]string, error) {
+	if limit < 1 {
+		return nil, fmt.Errorf("query limit must be greater than 0")
+	}
+	result, err := t.client.Collection(t.collection).Query(ctx, sdk.QueryInput{
+		Size: sdk.Int64(int64(limit)),
+		Query: map[string]any{
+			"knn": map[string]any{
+				"field":       field,
+				"queryVector": vector,
+				"k":           limit,
+			},
+		},
+		ConsistentRead: sdk.Bool(consistentRead),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, nil
+	}
+	ids := make([]string, 0, len(result.Docs))
+	for _, doc := range result.Docs {
+		if id, ok := doc.Doc[idField].(string); ok && id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}

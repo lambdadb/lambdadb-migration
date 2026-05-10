@@ -204,6 +204,9 @@ Important CLI flags:
 --migration.validate
 --migration.validation-sample-size
 --migration.validation-report
+--migration.query-overlap
+--migration.query-overlap-limit
+--migration.query-overlap-min-ratio
 --migration.checkpoint-path
 --migration.cleanup-checkpoint
 --migration.batch-delay-ms
@@ -220,6 +223,7 @@ Important CLI flags:
 - fetches up to `--migration.validation-sample-size` migrated sample documents with strongly consistent reads
 - compares sampled fields, including dense vectors and sparse vectors
 - writes a structured JSON report when `--migration.validation-report` is set; the report includes status, counts, sampled IDs, compared count, and errors
+- optionally compares Qdrant and LambdaDB dense-vector query results for validation samples when `--migration.query-overlap` is set
 
 Note: real LambdaDB smoke tests observed `numDocs=0` even after accepted writes, so `numDocs` is currently reported but not treated as the primary pass/fail signal. Sample fetch/field comparison is the stronger validation check.
 
@@ -384,6 +388,7 @@ Notes from the real E2E:
 
 - LambdaDB collection creation is asynchronous. `EnsureCollection` now waits until the collection is `ACTIVE` before writing.
 - The smoke test now runs with `--migration.validate`, which verifies migrated docs with strongly consistent `Fetch` by ID instead of relying on `numDocs`; `numDocs` has stayed at 0 even though writes were accepted and fetched successfully.
+- The unnamed dense real smoke case also runs `--migration.query-overlap` and passed with average overlap 1.000.
 - The real smoke suite now covers unnamed dense upsert, named dense upsert, dense+sparse payload-index upsert, additional payload index types, unnamed dense bulk write mode, and a larger dense bulk fixture.
 - Bulk write mode passed but can take longer before strongly consistent fetch sees the documents; latest small bulk case took about 96 seconds and the larger 64-document bulk case took about 53 seconds.
 - The test creates unique target collections with short names and deletes them during cleanup.
@@ -460,11 +465,10 @@ LambdaDB writes now retry transient failures with bounded exponential backoff, c
 - retry behavior is unit-tested and exercised against a controlled mock 503 fixture, but not against a controlled real-service failure fixture
 - collection creation/get calls still rely mostly on SDK behavior plus the existing `ACTIVE` wait loop
 
-### Validation Has Fetch-Based Report
+### Validation Has Fetch-Based Report And Query Overlap
 
-`--migration.validate` now checks accepted count and compares configurable fetched sample documents. `--migration.validation-report` writes a JSON report and implies validation. Remaining validation gaps:
+`--migration.validate` now checks accepted count and compares configurable fetched sample documents. `--migration.validation-report` writes a JSON report and implies validation. `--migration.query-overlap` compares dense-vector nearest-neighbor result overlap between Qdrant and LambdaDB for validation samples. It reports overlap by default and only fails validation when `--migration.query-overlap-min-ratio` is above `0` and the average falls below that threshold. Remaining validation gaps:
 
-- query overlap validation is not implemented
 - `numDocs` is reported but not used as a pass/fail signal because real smoke tests observed it staying at 0 after successful writes and fetches
 
 ### Docker And GoReleaser Snapshot Work
@@ -494,6 +498,7 @@ Current fixtures cover:
 - transient LambdaDB write retry using controlled HTTP 503 responses
 - checkpoint cleanup after successful validation
 - structured validation report creation
+- dense-vector query overlap validation
 - Manhattan distance rejection
 - multi-vector rejection
 
@@ -505,11 +510,11 @@ Remaining integration risk: controlled failure/retry behavior is still mock-only
 
 ## Suggested Next Work Order
 
-1. Add query overlap validation if search equivalence becomes a migration acceptance criterion.
-2. Raise `LAMBDADB_MIGRATION_REAL_LARGE_COUNT` for a heavier live bulk test when API cost/time is acceptable.
-3. Consider adding a real-service controlled failure fixture if LambdaDB exposes a safe way to simulate 429/5xx.
-4. Add release publishing automation after the repository remote and release process are finalized.
-5. Add more README examples for dense, named vector, and hybrid-style migrations.
+1. Raise `LAMBDADB_MIGRATION_REAL_LARGE_COUNT` for a heavier live bulk test when API cost/time is acceptable.
+2. Consider adding a real-service controlled failure fixture if LambdaDB exposes a safe way to simulate 429/5xx.
+3. Add release publishing automation after the repository remote and release process are finalized.
+4. Add more README examples for dense, named vector, and hybrid-style migrations.
+5. Extend query overlap validation to sparse, hybrid, and filter-heavy queries if needed.
 
 ## Files To Read First In The Next Session
 

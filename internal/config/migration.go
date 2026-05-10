@@ -19,6 +19,9 @@ type MigrationConfig struct {
 	Validate             bool      `help:"Run validation after migration."`
 	ValidationSampleSize int       `help:"Number of migrated sample documents to fetch during validation. Set to 0 for count-only validation." default:"10"`
 	ValidationReport     string    `help:"Write post-migration validation results to a JSON report file. Implies validation."`
+	QueryOverlap         bool      `help:"Compare Qdrant and LambdaDB dense-vector query results for validation samples."`
+	QueryOverlapLimit    int       `help:"Nearest-neighbor result size for query overlap validation." default:"5"`
+	QueryOverlapMinRatio float64   `help:"Minimum average query overlap ratio required. Set to 0 to report without failing." default:"0"`
 	CheckpointPath       string    `help:"Checkpoint directory. Defaults to .lambdadb-migration/checkpoints."`
 	CleanupCheckpoint    bool      `help:"Delete the migration checkpoint after a successful migration."`
 	BatchDelayMS         int       `help:"Delay between write batches in milliseconds." default:"0"`
@@ -36,6 +39,12 @@ func (c MigrationConfig) ValidateConfig() error {
 	}
 	if c.ValidationSampleSize < 0 {
 		return fmt.Errorf("migration validation sample size must be greater than or equal to 0")
+	}
+	if c.QueryOverlap && c.QueryOverlapLimit < 1 {
+		return fmt.Errorf("migration query overlap limit must be greater than 0")
+	}
+	if c.QueryOverlapMinRatio < 0 || c.QueryOverlapMinRatio > 1 {
+		return fmt.Errorf("migration query overlap minimum ratio must be between 0 and 1")
 	}
 	if c.BatchDelayMS < 0 {
 		return fmt.Errorf("migration batch delay must be greater than or equal to 0")

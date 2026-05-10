@@ -255,6 +255,8 @@ func TestQdrantToLambdaDBCheckpointCleanup(t *testing.T) {
 			Validate:             true,
 			ValidationSampleSize: 2,
 			ValidationReport:     reportPath,
+			QueryOverlap:         true,
+			QueryOverlapLimit:    2,
 			CheckpointPath:       checkpointDir,
 			CleanupCheckpoint:    true,
 			RetryMaxAttempts:     5,
@@ -277,12 +279,19 @@ func TestQdrantToLambdaDBCheckpointCleanup(t *testing.T) {
 		Samples struct {
 			Compared int `json:"compared"`
 		} `json:"samples"`
+		QueryOverlap struct {
+			Compared     int     `json:"compared"`
+			AverageRatio float64 `json:"averageRatio"`
+		} `json:"queryOverlap"`
 	}
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatalf("decode validation report: %v", err)
 	}
 	if report.Status != "pass" || report.Samples.Compared != 2 {
 		t.Fatalf("validation report = %#v, want pass with 2 compared samples", report)
+	}
+	if report.QueryOverlap.Compared != 2 || report.QueryOverlap.AverageRatio <= 0 {
+		t.Fatalf("query overlap report = %#v, want compared query overlap", report.QueryOverlap)
 	}
 }
 
@@ -721,6 +730,40 @@ func (m *lambdaDBMock) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := json.NewEncoder(w).Encode(response); err != nil {
 			m.t.Errorf("encode fetch response: %v", err)
+		}
+	case r.Method == http.MethodPost && r.URL.Path == path.Join(collectionPath, "query"):
+		var body struct {
+			Size *int `json:"size"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		limit := len(m.docs())
+		if body.Size != nil && *body.Size < limit {
+			limit = *body.Size
+		}
+		m.mu.Lock()
+		docs := make([]map[string]any, 0, limit)
+		for i, doc := range m.accepted {
+			if i >= limit {
+				break
+			}
+			docs = append(docs, map[string]any{
+				"collection": m.collection,
+				"score":      1,
+				"doc":        doc,
+			})
+		}
+		m.mu.Unlock()
+		response := map[string]any{
+			"total":        len(docs),
+			"took":         0,
+			"docs":         docs,
+			"isDocsInline": true,
+		}
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			m.t.Errorf("encode query response: %v", err)
 		}
 	default:
 		m.t.Errorf("unexpected LambdaDB mock request: %s %s", r.Method, r.URL.Path)

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -73,7 +74,7 @@ func (c *MigrateQdrantCmd) Run(globals *Globals) error {
 	key := checkpointKey(c.Qdrant.Collection, c.LambdaDB.ProjectName, c.LambdaDB.Collection)
 	var cursorValue any
 	var accepted uint64
-	shouldValidate := c.Migration.Validate || c.Migration.ValidationReport != ""
+	shouldValidate := c.Migration.Validate || c.Migration.ValidationReport != "" || c.Migration.QueryOverlap
 	sampleLimit := c.Migration.ValidationSampleSize
 	samples := make([]map[string]any, 0, sampleLimit)
 	startedAt := time.Now()
@@ -147,6 +148,15 @@ func (c *MigrateQdrantCmd) Run(globals *Globals) error {
 	fmt.Fprintln(os.Stderr, progress.CompleteLine(accepted, c.LambdaDB.Collection, time.Now()))
 	if shouldValidate {
 		report, validationErr := validateMigration(ctx, target, inv.RecordCount, accepted, samples, mapping)
+		if c.Migration.QueryOverlap {
+			overlapReport, err := validateQueryOverlap(ctx, src, target, samples, mapping, c.Migration.QueryOverlapLimit, c.Migration.QueryOverlapMinRatio)
+			report.QueryOverlap = &overlapReport
+			if err != nil {
+				report.Status = "fail"
+				report.Errors = append(report.Errors, err.Error())
+				validationErr = errors.Join(validationErr, err)
+			}
+		}
 		if c.Migration.ValidationReport != "" {
 			if err := writeValidationReport(c.Migration.ValidationReport, report); err != nil {
 				return errors.Join(validationErr, err)
@@ -176,6 +186,7 @@ type validationReport struct {
 	AcceptedRecords uint64                 `json:"acceptedRecords"`
 	LambdaDBNumDocs *uint64                `json:"lambdaDBNumDocs,omitempty"`
 	Samples         validationSampleReport `json:"samples"`
+	QueryOverlap    *queryOverlapReport    `json:"queryOverlap,omitempty"`
 	Errors          []string               `json:"errors,omitempty"`
 }
 
@@ -185,6 +196,34 @@ type validationSampleReport struct {
 	Compared  int      `json:"compared"`
 	Skipped   bool     `json:"skipped,omitempty"`
 	IDs       []string `json:"ids,omitempty"`
+}
+
+type queryOverlapReport struct {
+	Enabled      bool                  `json:"enabled"`
+	Limit        int                   `json:"limit"`
+	MinRatio     float64               `json:"minRatio"`
+	AverageRatio float64               `json:"averageRatio"`
+	Compared     int                   `json:"compared"`
+	Skipped      bool                  `json:"skipped,omitempty"`
+	SkipReason   string                `json:"skipReason,omitempty"`
+	Comparisons  []queryOverlapCompare `json:"comparisons,omitempty"`
+}
+
+type queryOverlapCompare struct {
+	SampleID     string   `json:"sampleId"`
+	VectorField  string   `json:"vectorField"`
+	SourceIDs    []string `json:"sourceIds"`
+	TargetIDs    []string `json:"targetIds"`
+	OverlapIDs   []string `json:"overlapIds"`
+	OverlapRatio float64  `json:"overlapRatio"`
+}
+
+type queryOverlapSource interface {
+	SearchDense(context.Context, string, []float32, int) ([]string, error)
+}
+
+type queryOverlapTarget interface {
+	QueryKNN(context.Context, string, string, []float32, int) ([]string, error)
 }
 
 func validateMigration(ctx context.Context, target validationTarget, sourceCount, accepted uint64, samples []map[string]any, mapping config.MappingConfig) (validationReport, error) {
@@ -291,6 +330,148 @@ func writeValidationReport(path string, report validationReport) error {
 		return fmt.Errorf("write validation report: %w", err)
 	}
 	return nil
+}
+
+func validateQueryOverlap(ctx context.Context, src queryOverlapSource, target queryOverlapTarget, samples []map[string]any, mapping config.MappingConfig, limit int, minRatio float64) (queryOverlapReport, error) {
+	report := queryOverlapReport{
+		Enabled:  true,
+		Limit:    limit,
+		MinRatio: minRatio,
+	}
+	if len(samples) == 0 {
+		report.Skipped = true
+		report.SkipReason = "no validation samples"
+		return report, nil
+	}
+
+	idField := mapping.IDs.TargetField
+	if idField == "" {
+		idField = "id"
+	}
+	vectorSources := sortedVectorSources(mapping.Vectors)
+	if len(vectorSources) == 0 {
+		report.Skipped = true
+		report.SkipReason = "no dense vector mappings"
+		return report, nil
+	}
+
+	var totalRatio float64
+	for _, sample := range samples {
+		sampleID, _ := sample[idField].(string)
+		sourceName, targetField, vector, ok := queryOverlapVector(sample, mapping, vectorSources)
+		if !ok {
+			continue
+		}
+		sourceIDs, err := src.SearchDense(ctx, sourceName, vector, limit)
+		if err != nil {
+			return report, fmt.Errorf("query overlap source search for sample %q: %w", sampleID, err)
+		}
+		targetIDs, err := target.QueryKNN(ctx, idField, targetField, vector, limit)
+		if err != nil {
+			return report, fmt.Errorf("query overlap LambdaDB search for sample %q: %w", sampleID, err)
+		}
+		overlapIDs := intersectOrdered(sourceIDs, targetIDs)
+		denominator := minInt(len(sourceIDs), len(targetIDs))
+		var ratio float64
+		if denominator > 0 {
+			ratio = float64(len(overlapIDs)) / float64(denominator)
+		}
+		report.Comparisons = append(report.Comparisons, queryOverlapCompare{
+			SampleID:     sampleID,
+			VectorField:  targetField,
+			SourceIDs:    sourceIDs,
+			TargetIDs:    targetIDs,
+			OverlapIDs:   overlapIDs,
+			OverlapRatio: ratio,
+		})
+		totalRatio += ratio
+	}
+	report.Compared = len(report.Comparisons)
+	if report.Compared == 0 {
+		report.Skipped = true
+		report.SkipReason = "no sampled dense vectors"
+		return report, nil
+	}
+	report.AverageRatio = totalRatio / float64(report.Compared)
+	fmt.Fprintf(os.Stderr, "validation query overlap average=%.3f compared=%d limit=%d\n", report.AverageRatio, report.Compared, limit)
+	if minRatio > 0 && report.AverageRatio < minRatio {
+		return report, fmt.Errorf("query overlap average %.3f below minimum %.3f", report.AverageRatio, minRatio)
+	}
+	return report, nil
+}
+
+func sortedVectorSources(vectors map[string]config.VectorMapping) []string {
+	out := make([]string, 0, len(vectors))
+	for sourceName := range vectors {
+		out = append(out, sourceName)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return querySourceSortName(out[i]) < querySourceSortName(out[j])
+	})
+	return out
+}
+
+func querySourceSortName(value string) string {
+	if value == "" {
+		return "dense"
+	}
+	return value
+}
+
+func queryOverlapVector(sample map[string]any, mapping config.MappingConfig, sourceNames []string) (string, string, []float32, bool) {
+	for _, sourceName := range sourceNames {
+		targetField := mapping.Vectors[sourceName].TargetField
+		if targetField == "" && sourceName == "" {
+			targetField = "dense"
+		}
+		vector, ok := asFloat32Slice(sample[targetField])
+		if ok {
+			return sourceName, targetField, vector, true
+		}
+	}
+	return "", "", nil, false
+}
+
+func asFloat32Slice(value any) ([]float32, bool) {
+	switch v := value.(type) {
+	case []float32:
+		return v, true
+	case []any:
+		out := make([]float32, 0, len(v))
+		for _, item := range v {
+			f, ok := asFloat64(item)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, float32(f))
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
+func intersectOrdered(left, right []string) []string {
+	rightSet := map[string]bool{}
+	for _, id := range right {
+		rightSet[id] = true
+	}
+	out := make([]string, 0, minInt(len(left), len(right)))
+	seen := map[string]bool{}
+	for _, id := range left {
+		if rightSet[id] && !seen[id] {
+			out = append(out, id)
+			seen[id] = true
+		}
+	}
+	return out
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func waitForFetchedDocuments(ctx context.Context, target validationTarget, ids []string) ([]map[string]any, error) {

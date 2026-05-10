@@ -50,22 +50,24 @@ func TestQdrantToRealLambdaDBSmoke(t *testing.T) {
 	}
 
 	tests := []struct {
-		name      string
-		slug      string
-		fixture   qdrantFixture
-		writeMode config.WriteMode
-		batchSize int
-		mapping   func(string) config.MappingConfig
-		ids       []string
-		assertDoc func(map[string]any) error
+		name         string
+		slug         string
+		fixture      qdrantFixture
+		writeMode    config.WriteMode
+		batchSize    int
+		mapping      func(string) config.MappingConfig
+		queryOverlap bool
+		ids          []string
+		assertDoc    func(map[string]any) error
 	}{
 		{
-			name:      "unnamed_dense_upsert",
-			slug:      "udu",
-			fixture:   unnamedDenseFixture(),
-			writeMode: config.WriteModeUpsert,
-			batchSize: 2,
-			ids:       []string{"1", "2"},
+			name:         "unnamed_dense_upsert",
+			slug:         "udu",
+			fixture:      unnamedDenseFixture(),
+			writeMode:    config.WriteModeUpsert,
+			batchSize:    2,
+			queryOverlap: true,
+			ids:          []string{"1", "2"},
 			assertDoc: func(doc map[string]any) error {
 				if err := requireLambdaDBDocField(doc, "dense"); err != nil {
 					return err
@@ -206,6 +208,8 @@ func TestQdrantToRealLambdaDBSmoke(t *testing.T) {
 					CreateCollection:     true,
 					Validate:             true,
 					ValidationSampleSize: 10,
+					QueryOverlap:         tt.queryOverlap,
+					QueryOverlapLimit:    2,
 					CheckpointPath:       t.TempDir(),
 					RetryMaxAttempts:     5,
 					RetryInitialDelayMS:  500,

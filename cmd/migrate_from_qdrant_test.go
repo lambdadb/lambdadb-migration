@@ -24,6 +24,22 @@ func (f fakeValidationTarget) Fetch(context.Context, []string) ([]map[string]any
 	return f.docs, nil
 }
 
+type fakeQuerySource struct {
+	ids []string
+}
+
+func (f fakeQuerySource) SearchDense(context.Context, string, []float32, int) ([]string, error) {
+	return f.ids, nil
+}
+
+type fakeQueryTarget struct {
+	ids []string
+}
+
+func (f fakeQueryTarget) QueryKNN(context.Context, string, string, []float32, int) ([]string, error) {
+	return f.ids, nil
+}
+
 func TestValidateMigrationComparesSamples(t *testing.T) {
 	sample := map[string]any{
 		"id":       "1",
@@ -99,5 +115,48 @@ func TestWriteValidationReport(t *testing.T) {
 	}
 	if got.Status != "pass" || got.Samples.IDs[0] != "1" {
 		t.Fatalf("validation report = %#v, want written report", got)
+	}
+}
+
+func TestValidateQueryOverlapReportsAverageOverlap(t *testing.T) {
+	report, err := validateQueryOverlap(
+		context.Background(),
+		fakeQuerySource{ids: []string{"1", "2", "3"}},
+		fakeQueryTarget{ids: []string{"2", "3", "4"}},
+		[]map[string]any{{"id": "1", "dense": []float32{0.1, 0.2}}},
+		config.MappingConfig{
+			Vectors: map[string]config.VectorMapping{
+				"": {TargetField: "dense"},
+			},
+			IDs: config.IDMapping{TargetField: "id"},
+		},
+		3,
+		0.5,
+	)
+	if err != nil {
+		t.Fatalf("validateQueryOverlap() error = %v", err)
+	}
+	if report.Compared != 1 || report.AverageRatio < 0.66 || report.AverageRatio > 0.67 {
+		t.Fatalf("query overlap report = %#v, want 2/3 overlap", report)
+	}
+}
+
+func TestValidateQueryOverlapRejectsLowAverageOverlap(t *testing.T) {
+	_, err := validateQueryOverlap(
+		context.Background(),
+		fakeQuerySource{ids: []string{"1"}},
+		fakeQueryTarget{ids: []string{"2"}},
+		[]map[string]any{{"id": "1", "dense": []float32{0.1, 0.2}}},
+		config.MappingConfig{
+			Vectors: map[string]config.VectorMapping{
+				"": {TargetField: "dense"},
+			},
+			IDs: config.IDMapping{TargetField: "id"},
+		},
+		1,
+		0.1,
+	)
+	if err == nil || !strings.Contains(err.Error(), "below minimum") {
+		t.Fatalf("validateQueryOverlap() error = %v, want below minimum", err)
 	}
 }

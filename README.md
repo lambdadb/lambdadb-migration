@@ -90,6 +90,9 @@ Useful migration safety flags:
 ```text
 --migration.validation-sample-size 10
 --migration.validation-report validation-report.json
+--migration.query-overlap
+--migration.query-overlap-limit 5
+--migration.query-overlap-min-ratio 0
 --migration.retry-max-attempts 5
 --migration.retry-initial-delay-ms 500
 --migration.retry-max-delay-ms 5000
@@ -97,5 +100,7 @@ Useful migration safety flags:
 ```
 
 `--migration.validation-report` writes a JSON report with pass/fail status, source and accepted counts, LambdaDB `numDocs`, sampled document IDs, compared sample count, and validation errors. Setting it also enables validation.
+
+`--migration.query-overlap` adds dense-vector query overlap checks for validation samples. By default it reports overlap without failing; set `--migration.query-overlap-min-ratio` above `0` to require a minimum average overlap.
 
 Migration progress is written to stderr with accepted count, percent, batch size, rate, and elapsed time.
