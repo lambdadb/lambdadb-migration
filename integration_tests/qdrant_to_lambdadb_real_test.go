@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -39,12 +40,22 @@ func TestQdrantToRealLambdaDBSmoke(t *testing.T) {
 		sdk.WithProjectName(projectName),
 		sdk.WithAPIKey(apiKey),
 	)
+	largeCount := 64
+	if raw := os.Getenv("LAMBDADB_MIGRATION_REAL_LARGE_COUNT"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 {
+			t.Fatalf("LAMBDADB_MIGRATION_REAL_LARGE_COUNT=%q, want positive integer", raw)
+		}
+		largeCount = parsed
+	}
 
 	tests := []struct {
 		name      string
 		slug      string
 		fixture   qdrantFixture
 		writeMode config.WriteMode
+		batchSize int
+		mapping   func(string) config.MappingConfig
 		ids       []string
 		assertDoc func(map[string]any) error
 	}{
@@ -53,6 +64,7 @@ func TestQdrantToRealLambdaDBSmoke(t *testing.T) {
 			slug:      "udu",
 			fixture:   unnamedDenseFixture(),
 			writeMode: config.WriteModeUpsert,
+			batchSize: 2,
 			ids:       []string{"1", "2"},
 			assertDoc: func(doc map[string]any) error {
 				if err := requireLambdaDBDocField(doc, "dense"); err != nil {
@@ -69,6 +81,7 @@ func TestQdrantToRealLambdaDBSmoke(t *testing.T) {
 			slug:      "ndu",
 			fixture:   namedDenseFixture(),
 			writeMode: config.WriteModeUpsert,
+			batchSize: 2,
 			ids:       []string{"101", "102"},
 			assertDoc: func(doc map[string]any) error {
 				if err := requireLambdaDBDocField(doc, "title_dense"); err != nil {
@@ -82,6 +95,7 @@ func TestQdrantToRealLambdaDBSmoke(t *testing.T) {
 			slug:      "dspu",
 			fixture:   denseSparsePayloadIndexFixture(),
 			writeMode: config.WriteModeUpsert,
+			batchSize: 2,
 			ids:       []string{"201", "202"},
 			assertDoc: func(doc map[string]any) error {
 				if err := requireLambdaDBDocField(doc, "body_dense"); err != nil {
@@ -101,6 +115,7 @@ func TestQdrantToRealLambdaDBSmoke(t *testing.T) {
 			slug:      "udb",
 			fixture:   unnamedDenseFixture(),
 			writeMode: config.WriteModeBulk,
+			batchSize: 2,
 			ids:       []string{"1", "2"},
 			assertDoc: func(doc map[string]any) error {
 				if err := requireLambdaDBDocField(doc, "dense"); err != nil {
@@ -112,6 +127,40 @@ func TestQdrantToRealLambdaDBSmoke(t *testing.T) {
 				return nil
 			},
 		},
+		{
+			name:      "additional_payload_index_types_upsert",
+			slug:      "apitu",
+			fixture:   additionalPayloadIndexTypesFixture(),
+			writeMode: config.WriteModeUpsert,
+			batchSize: 2,
+			mapping:   additionalPayloadIndexTypesMapping,
+			ids:       []string{"501", "502"},
+			assertDoc: func(doc map[string]any) error {
+				for _, field := range []string{"dense", "body", "score", "published_at", "is_public", "attributes"} {
+					if err := requireLambdaDBDocField(doc, field); err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+		},
+		{
+			name:      "larger_dense_bulk",
+			slug:      "ldb",
+			fixture:   largeDenseFixture(largeCount),
+			writeMode: config.WriteModeBulk,
+			batchSize: 17,
+			ids:       largeDenseIDs(largeCount),
+			assertDoc: func(doc map[string]any) error {
+				if err := requireLambdaDBDocField(doc, "dense"); err != nil {
+					return err
+				}
+				if err := requireLambdaDBDocField(doc, "rank"); err != nil {
+					return err
+				}
+				return requireLambdaDBDocField(doc, "title")
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -121,6 +170,10 @@ func TestQdrantToRealLambdaDBSmoke(t *testing.T) {
 			targetCollection := fmt.Sprintf("mre_%s_%d", tt.slug, suffix%1_000_000_000)
 
 			seedQdrantCollection(t, ctx, qdrantURL, sourceCollection, tt.fixture)
+			var mappingFile string
+			if tt.mapping != nil {
+				mappingFile = writeMappingFile(t, tt.mapping(targetCollection))
+			}
 
 			if err := deleteLambdaDBCollectionIfExists(ctx, lambdaClient, targetCollection); err != nil {
 				t.Fatalf("delete pre-existing LambdaDB collection: %v", err)
@@ -146,14 +199,19 @@ func TestQdrantToRealLambdaDBSmoke(t *testing.T) {
 					Collection:  targetCollection,
 				},
 				Migration: config.MigrationConfig{
-					BatchSize:        2,
-					MaxBatchBytes:    6_000_000,
-					WriteMode:        tt.writeMode,
-					Restart:          true,
-					CreateCollection: true,
-					Validate:         true,
-					CheckpointPath:   t.TempDir(),
+					BatchSize:            tt.batchSize,
+					MaxBatchBytes:        6_000_000,
+					WriteMode:            tt.writeMode,
+					Restart:              true,
+					CreateCollection:     true,
+					Validate:             true,
+					ValidationSampleSize: 10,
+					CheckpointPath:       t.TempDir(),
+					RetryMaxAttempts:     5,
+					RetryInitialDelayMS:  500,
+					RetryMaxDelayMS:      5_000,
 				},
+				MappingFile: mappingFile,
 			}
 			if err := cmd.Run(&migrationcmd.Globals{}); err != nil {
 				t.Fatalf("migration Run() error = %v", err)
@@ -205,6 +263,14 @@ func waitForLambdaDBDocs(ctx context.Context, client *sdk.Client, collection str
 		case <-ticker.C:
 		}
 	}
+}
+
+func largeDenseIDs(count int) []string {
+	ids := make([]string, 0, count)
+	for i := 1; i <= count; i++ {
+		ids = append(ids, strconv.Itoa(1000+i))
+	}
+	return ids
 }
 
 func deleteLambdaDBCollectionIfExists(ctx context.Context, client *sdk.Client, collection string) error {

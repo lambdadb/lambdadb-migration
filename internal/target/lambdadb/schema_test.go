@@ -21,8 +21,12 @@ func TestBuildIndexConfigs(t *testing.T) {
 		},
 		Payload: config.PayloadMapping{
 			IndexConfigs: map[string]map[string]any{
-				"tenant_id": {"type": "keyword"},
-				"title":     {"type": "text", "analyzers": []any{"english"}},
+				"tenant_id":    {"type": "keyword"},
+				"title":        {"type": "text", "analyzers": []any{"english"}},
+				"score":        {"type": "double"},
+				"published_at": {"type": "datetime"},
+				"is_public":    {"type": "boolean"},
+				"attributes":   {"type": "object"},
 			},
 		},
 	})
@@ -41,6 +45,18 @@ func TestBuildIndexConfigs(t *testing.T) {
 	}
 	if got := cfgs["title"].IndexConfigsText.Analyzers; len(got) != 1 || got[0] != components.AnalyzerEnglish {
 		t.Fatalf("title analyzers = %v, want [english]", got)
+	}
+	if got := cfgs["score"].Type; got != components.IndexConfigsUnionTypeDouble {
+		t.Fatalf("score type = %v, want double", got)
+	}
+	if got := cfgs["published_at"].Type; got != components.IndexConfigsUnionTypeDatetime {
+		t.Fatalf("published_at type = %v, want datetime", got)
+	}
+	if got := cfgs["is_public"].Type; got != components.IndexConfigsUnionTypeBoolean {
+		t.Fatalf("is_public type = %v, want boolean", got)
+	}
+	if got := cfgs["attributes"].Type; got != components.IndexConfigsUnionTypeObject {
+		t.Fatalf("attributes type = %v, want object", got)
 	}
 }
 

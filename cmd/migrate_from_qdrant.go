@@ -27,7 +27,6 @@ type MigrateQdrantCmd struct {
 }
 
 const (
-	validationSampleLimit  = 10
 	validationPollInterval = 1 * time.Second
 	validationTimeout      = 5 * time.Minute
 )
@@ -60,7 +59,11 @@ func (c *MigrateQdrantCmd) Run(globals *Globals) error {
 		return printDryRun(inv.RecordCount, mapping)
 	}
 
-	target := targetlambdadb.New(c.LambdaDB, c.Migration.WriteMode)
+	target := targetlambdadb.New(c.LambdaDB, c.Migration.WriteMode, targetlambdadb.WriteRetryPolicy{
+		MaxAttempts:  c.Migration.RetryMaxAttempts,
+		InitialDelay: time.Duration(c.Migration.RetryInitialDelayMS) * time.Millisecond,
+		MaxDelay:     time.Duration(c.Migration.RetryMaxDelayMS) * time.Millisecond,
+	})
 	if err := target.EnsureCollection(ctx, inv, mapping); err != nil {
 		return err
 	}
@@ -70,7 +73,8 @@ func (c *MigrateQdrantCmd) Run(globals *Globals) error {
 	key := checkpointKey(c.Qdrant.Collection, c.LambdaDB.ProjectName, c.LambdaDB.Collection)
 	var cursorValue any
 	var accepted uint64
-	samples := make([]map[string]any, 0, validationSampleLimit)
+	sampleLimit := c.Migration.ValidationSampleSize
+	samples := make([]map[string]any, 0, sampleLimit)
 	startedAt := time.Now()
 	if !c.Migration.Restart {
 		cp, err := store.Load(ctx, key)
@@ -101,7 +105,7 @@ func (c *MigrateQdrantCmd) Run(globals *Globals) error {
 				return err
 			}
 			docs = append(docs, doc)
-			if c.Migration.Validate && len(samples) < validationSampleLimit {
+			if c.Migration.Validate && len(samples) < sampleLimit {
 				samples = append(samples, cloneDocument(doc))
 			}
 		}
@@ -145,6 +149,11 @@ func (c *MigrateQdrantCmd) Run(globals *Globals) error {
 			return err
 		}
 	}
+	if c.Migration.CleanupCheckpoint {
+		if err := store.Delete(ctx, key); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -167,7 +176,7 @@ func validateMigration(ctx context.Context, target validationTarget, sourceCount
 
 	if len(samples) == 0 {
 		if accepted > 0 {
-			errs = append(errs, fmt.Errorf("validation has no sample documents to fetch"))
+			fmt.Fprintln(os.Stderr, "validation sample fetch skipped")
 		}
 		return errors.Join(errs...)
 	}
@@ -284,6 +293,28 @@ func valuesEqual(expected, actual any) bool {
 		}
 		for key, ev := range e {
 			if !numericEqual(float64(ev), a[key]) {
+				return false
+			}
+		}
+		return true
+	case map[string]any:
+		a, ok := actual.(map[string]any)
+		if !ok || len(e) != len(a) {
+			return false
+		}
+		for key, ev := range e {
+			if !valuesEqual(ev, a[key]) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		a, ok := actual.([]any)
+		if !ok || len(e) != len(a) {
+			return false
+		}
+		for i, ev := range e {
+			if !valuesEqual(ev, a[i]) {
 				return false
 			}
 		}

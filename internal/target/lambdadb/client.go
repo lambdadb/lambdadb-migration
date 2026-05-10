@@ -22,34 +22,40 @@ const (
 	includeVectors              = true
 )
 
-var defaultWriteRetryPolicy = retryPolicy{
-	maxAttempts:  5,
-	initialDelay: 500 * time.Millisecond,
-	maxDelay:     5 * time.Second,
+var defaultWriteRetryPolicy = WriteRetryPolicy{
+	MaxAttempts:  5,
+	InitialDelay: 500 * time.Millisecond,
+	MaxDelay:     5 * time.Second,
 }
 
-type retryPolicy struct {
-	maxAttempts  int
-	initialDelay time.Duration
-	maxDelay     time.Duration
+type WriteRetryPolicy struct {
+	MaxAttempts  int
+	InitialDelay time.Duration
+	MaxDelay     time.Duration
 }
 
 type Target struct {
-	client     *sdk.Client
-	collection string
-	writeMode  config.WriteMode
+	client           *sdk.Client
+	collection       string
+	writeMode        config.WriteMode
+	writeRetryPolicy WriteRetryPolicy
 }
 
-func New(cfg config.LambdaDBConfig, writeMode config.WriteMode) *Target {
+func New(cfg config.LambdaDBConfig, writeMode config.WriteMode, policies ...WriteRetryPolicy) *Target {
 	client := sdk.New(
 		sdk.WithBaseURL(cfg.BaseURL),
 		sdk.WithProjectName(cfg.ProjectName),
 		sdk.WithAPIKey(cfg.APIKey),
 	)
+	writeRetryPolicy := defaultWriteRetryPolicy
+	if len(policies) > 0 {
+		writeRetryPolicy = policies[0]
+	}
 	return &Target{
-		client:     client,
-		collection: cfg.Collection,
-		writeMode:  writeMode,
+		client:           client,
+		collection:       cfg.Collection,
+		writeMode:        writeMode,
+		writeRetryPolicy: writeRetryPolicy,
 	}
 }
 
@@ -117,7 +123,7 @@ func (t *Target) Write(ctx context.Context, docs []map[string]any) error {
 	if len(docs) == 0 {
 		return nil
 	}
-	return writeWithRetry(ctx, defaultWriteRetryPolicy, func() error {
+	return writeWithRetry(ctx, t.writeRetryPolicy, func() error {
 		return t.writeOnce(ctx, docs)
 	})
 }
@@ -135,24 +141,24 @@ func (t *Target) writeOnce(ctx context.Context, docs []map[string]any) error {
 	}
 }
 
-func writeWithRetry(ctx context.Context, policy retryPolicy, operation func() error) error {
-	if policy.maxAttempts < 1 {
-		policy.maxAttempts = 1
+func writeWithRetry(ctx context.Context, policy WriteRetryPolicy, operation func() error) error {
+	if policy.MaxAttempts < 1 {
+		policy.MaxAttempts = 1
 	}
-	delay := policy.initialDelay
+	delay := policy.InitialDelay
 	if delay < 0 {
 		delay = 0
 	}
-	maxDelay := policy.maxDelay
+	maxDelay := policy.MaxDelay
 	if maxDelay < delay {
 		maxDelay = delay
 	}
 
 	var lastErr error
-	for attempt := 1; attempt <= policy.maxAttempts; attempt++ {
+	for attempt := 1; attempt <= policy.MaxAttempts; attempt++ {
 		if err := operation(); err != nil {
 			lastErr = err
-			if attempt == policy.maxAttempts || !isTransientWriteError(err) {
+			if attempt == policy.MaxAttempts || !isTransientWriteError(err) {
 				return err
 			}
 		} else {

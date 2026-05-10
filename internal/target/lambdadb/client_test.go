@@ -5,13 +5,14 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/lambdadb/go-lambdadb/models/apierrors"
 )
 
 func TestWriteWithRetryRetriesTransientErrors(t *testing.T) {
 	attempts := 0
-	err := writeWithRetry(context.Background(), retryPolicy{maxAttempts: 3}, func() error {
+	err := writeWithRetry(context.Background(), WriteRetryPolicy{MaxAttempts: 3}, func() error {
 		attempts++
 		if attempts < 3 {
 			return apierrors.NewAPIError("rate limited", http.StatusTooManyRequests, "", nil)
@@ -29,7 +30,7 @@ func TestWriteWithRetryRetriesTransientErrors(t *testing.T) {
 func TestWriteWithRetryStopsOnPermanentError(t *testing.T) {
 	attempts := 0
 	permanent := errors.New("validation failed")
-	err := writeWithRetry(context.Background(), retryPolicy{maxAttempts: 3}, func() error {
+	err := writeWithRetry(context.Background(), WriteRetryPolicy{MaxAttempts: 3}, func() error {
 		attempts++
 		return permanent
 	})
@@ -44,7 +45,7 @@ func TestWriteWithRetryStopsOnPermanentError(t *testing.T) {
 func TestWriteWithRetryHonorsContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	attempts := 0
-	err := writeWithRetry(ctx, retryPolicy{maxAttempts: 3, initialDelay: 1}, func() error {
+	err := writeWithRetry(ctx, WriteRetryPolicy{MaxAttempts: 3, InitialDelay: time.Second}, func() error {
 		attempts++
 		cancel()
 		return apierrors.NewAPIError("temporary outage", http.StatusServiceUnavailable, "", nil)

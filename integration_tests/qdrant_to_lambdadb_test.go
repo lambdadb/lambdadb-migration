@@ -36,11 +36,13 @@ func TestQdrantToLambdaDBMockIntegration(t *testing.T) {
 	}
 
 	tests := []struct {
-		name       string
-		fixture    qdrantFixture
-		assertDocs func(*testing.T, []map[string]any)
-		assertMock func(*testing.T, *lambdaDBMock)
-		wantErr    string
+		name          string
+		fixture       qdrantFixture
+		mapping       func(string) config.MappingConfig
+		configureMock func(*lambdaDBMock)
+		assertDocs    func(*testing.T, []map[string]any)
+		assertMock    func(*testing.T, *lambdaDBMock)
+		wantErr       string
 	}{
 		{
 			name:    "unnamed_dense_with_dotted_payload",
@@ -98,6 +100,44 @@ func TestQdrantToLambdaDBMockIntegration(t *testing.T) {
 			},
 		},
 		{
+			name:    "additional_payload_index_types",
+			fixture: additionalPayloadIndexTypesFixture(),
+			mapping: additionalPayloadIndexTypesMapping,
+			assertDocs: func(t *testing.T, docs []map[string]any) {
+				t.Helper()
+				requireDocCount(t, docs, 2)
+				doc := requireDoc(t, docs, "501")
+				requireField(t, doc, "dense")
+				requireField(t, doc, "body")
+				requireField(t, doc, "score")
+				requireField(t, doc, "published_at")
+				requireField(t, doc, "is_public")
+				requireField(t, doc, "attributes")
+			},
+			assertMock: func(t *testing.T, mock *lambdaDBMock) {
+				t.Helper()
+				requireCreatedIndexFields(t, mock, "body", "score", "published_at", "is_public", "attributes")
+				requireCreatedIndexFields(t, mock, "standard")
+			},
+		},
+		{
+			name:    "retry_transient_write_failure",
+			fixture: unnamedDenseFixture(),
+			configureMock: func(mock *lambdaDBMock) {
+				mock.writeFailuresRemaining = 2
+			},
+			assertDocs: func(t *testing.T, docs []map[string]any) {
+				t.Helper()
+				requireDocCount(t, docs, 2)
+			},
+			assertMock: func(t *testing.T, mock *lambdaDBMock) {
+				t.Helper()
+				if got, want := mock.writeAttempts(), 3; got != want {
+					t.Fatalf("LambdaDB mock write attempts = %d, want %d", got, want)
+				}
+			},
+		},
+		{
 			name:    "manhattan_distance_rejected",
 			fixture: manhattanFixture(),
 			wantErr: `unsupported similarity "unsupported:manhattan"`,
@@ -115,7 +155,14 @@ func TestQdrantToLambdaDBMockIntegration(t *testing.T) {
 			seedQdrantCollection(t, ctx, qdrantURL, collection, tt.fixture)
 
 			mock := newLambdaDBMock(t, "playground", "articles")
+			if tt.configureMock != nil {
+				tt.configureMock(mock)
+			}
 			defer mock.server.Close()
+			var mappingFile string
+			if tt.mapping != nil {
+				mappingFile = writeMappingFile(t, tt.mapping("articles"))
+			}
 
 			cmd := migrationcmd.MigrateQdrantCmd{
 				Qdrant: config.QdrantConfig{
@@ -130,14 +177,18 @@ func TestQdrantToLambdaDBMockIntegration(t *testing.T) {
 					Collection:  "articles",
 				},
 				Migration: config.MigrationConfig{
-					BatchSize:        2,
-					MaxBatchBytes:    6_000_000,
-					WriteMode:        config.WriteModeUpsert,
-					Restart:          true,
-					CreateCollection: true,
-					Validate:         tt.wantErr == "",
-					CheckpointPath:   t.TempDir(),
+					BatchSize:            2,
+					MaxBatchBytes:        6_000_000,
+					WriteMode:            config.WriteModeUpsert,
+					Restart:              true,
+					CreateCollection:     true,
+					Validate:             tt.wantErr == "",
+					ValidationSampleSize: 10,
+					CheckpointPath:       t.TempDir(),
+					RetryMaxAttempts:     5,
+					RetryMaxDelayMS:      1,
 				},
+				MappingFile: mappingFile,
 			}
 			err := cmd.Run(&migrationcmd.Globals{})
 			if tt.wantErr != "" {
@@ -297,6 +348,122 @@ func multiVectorFixture() qdrantFixture {
 	}
 }
 
+func additionalPayloadIndexTypesFixture() qdrantFixture {
+	return qdrantFixture{
+		vectorsConfig: qdrantapi.NewVectorsConfig(&qdrantapi.VectorParams{
+			Size:     3,
+			Distance: qdrantapi.Distance_Cosine,
+		}),
+		payloadIndexes: []qdrantPayloadIndex{
+			{field: "body", typ: qdrantapi.FieldType_FieldTypeText},
+			{field: "score", typ: qdrantapi.FieldType_FieldTypeFloat},
+			{field: "published_at", typ: qdrantapi.FieldType_FieldTypeDatetime},
+			{field: "is_public", typ: qdrantapi.FieldType_FieldTypeBool},
+		},
+		points: []*qdrantapi.PointStruct{
+			{
+				Id:      qdrantapi.NewIDNum(501),
+				Vectors: qdrantapi.NewVectors(0.1, 0.2, 0.3),
+				Payload: qdrantapi.NewValueMap(map[string]any{
+					"body":         "first searchable body",
+					"score":        0.95,
+					"published_at": "2026-05-10T00:00:00Z",
+					"is_public":    true,
+					"attributes": map[string]any{
+						"section": "docs",
+						"rank":    1,
+					},
+				}),
+			},
+			{
+				Id:      qdrantapi.NewIDNum(502),
+				Vectors: qdrantapi.NewVectors(0.4, 0.5, 0.6),
+				Payload: qdrantapi.NewValueMap(map[string]any{
+					"body":         "second searchable body",
+					"score":        0.87,
+					"published_at": "2026-05-11T00:00:00Z",
+					"is_public":    false,
+					"attributes": map[string]any{
+						"section": "guides",
+						"rank":    2,
+					},
+				}),
+			},
+		},
+	}
+}
+
+func largeDenseFixture(count int) qdrantFixture {
+	points := make([]*qdrantapi.PointStruct, 0, count)
+	for i := 1; i <= count; i++ {
+		id := uint64(1000 + i)
+		points = append(points, &qdrantapi.PointStruct{
+			Id: qdrantapi.NewIDNum(id),
+			Vectors: qdrantapi.NewVectors(
+				float32(i%10)/10,
+				float32((i+1)%10)/10,
+				float32((i+2)%10)/10,
+			),
+			Payload: qdrantapi.NewValueMap(map[string]any{
+				"title": fmt.Sprintf("large fixture %d", i),
+				"rank":  int64(i),
+			}),
+		})
+	}
+	return qdrantFixture{
+		vectorsConfig: qdrantapi.NewVectorsConfig(&qdrantapi.VectorParams{
+			Size:     3,
+			Distance: qdrantapi.Distance_Cosine,
+		}),
+		payloadIndexes: []qdrantPayloadIndex{
+			{field: "rank", typ: qdrantapi.FieldType_FieldTypeInteger},
+		},
+		points: points,
+	}
+}
+
+func additionalPayloadIndexTypesMapping(targetCollection string) config.MappingConfig {
+	return config.MappingConfig{
+		Target: config.MappingTarget{
+			Collection:       targetCollection,
+			CreateCollection: true,
+		},
+		Vectors: map[string]config.VectorMapping{
+			"": {
+				TargetField: "dense",
+				Dimensions:  3,
+				Similarity:  "cosine",
+			},
+		},
+		SparseVectors: map[string]config.SparseVectorMapping{},
+		Payload: config.PayloadMapping{
+			Mode:   "flatten",
+			Rename: map[string]string{},
+			IndexConfigs: map[string]map[string]any{
+				"body":         {"type": "text", "analyzers": []string{"standard"}},
+				"score":        {"type": "double"},
+				"published_at": {"type": "datetime"},
+				"is_public":    {"type": "boolean"},
+				"attributes":   {"type": "object"},
+			},
+		},
+		IDs: config.IDMapping{TargetField: "id"},
+	}
+}
+
+func writeMappingFile(t *testing.T, mapping config.MappingConfig) string {
+	t.Helper()
+	data, err := json.Marshal(mapping)
+	if err != nil {
+		t.Fatalf("marshal mapping: %v", err)
+	}
+	path := path.Join(t.TempDir(), "mapping.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write mapping file: %v", err)
+	}
+	return path
+}
+
 func seedQdrantCollection(t *testing.T, ctx context.Context, rawURL, collection string, fixture qdrantFixture) {
 	t.Helper()
 
@@ -373,14 +540,16 @@ func isNotFound(err error) bool {
 }
 
 type lambdaDBMock struct {
-	t          *testing.T
-	project    string
-	collection string
-	server     *httptest.Server
-	mu         sync.Mutex
-	accepted   []map[string]any
-	created    []map[string]any
-	exists     bool
+	t                      *testing.T
+	project                string
+	collection             string
+	server                 *httptest.Server
+	mu                     sync.Mutex
+	accepted               []map[string]any
+	created                []map[string]any
+	exists                 bool
+	writeFailuresRemaining int
+	writeAttemptCount      int
 }
 
 func newLambdaDBMock(t *testing.T, project, collection string) *lambdaDBMock {
@@ -421,6 +590,17 @@ func (m *lambdaDBMock) handle(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte(`{"collection":{"collectionName":"` + m.collection + `","numDocs":0,"collectionStatus":"ACTIVE","createdAt":1700000000,"updatedAt":1700000000,"dataUpdatedAt":1700000000}}`))
 	case r.Method == http.MethodPost && r.URL.Path == path.Join(collectionPath, "docs", "upsert"):
+		m.mu.Lock()
+		m.writeAttemptCount++
+		if m.writeFailuresRemaining > 0 {
+			m.writeFailuresRemaining--
+			m.mu.Unlock()
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"message":"temporary outage"}`))
+			return
+		}
+		m.mu.Unlock()
+
 		var body struct {
 			Docs []map[string]any `json:"docs"`
 		}
@@ -486,6 +666,12 @@ func (m *lambdaDBMock) creates() []map[string]any {
 	out := make([]map[string]any, len(m.created))
 	copy(out, m.created)
 	return out
+}
+
+func (m *lambdaDBMock) writeAttempts() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.writeAttemptCount
 }
 
 func requireDocCount(t *testing.T, docs []map[string]any, want int) {
