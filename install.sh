@@ -7,6 +7,7 @@ INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 VERSION="${VERSION:-latest}"
 VERIFY_CHECKSUM="${VERIFY_CHECKSUM:-1}"
 DRY_RUN="${DRY_RUN:-0}"
+UNINSTALL="${UNINSTALL:-0}"
 
 usage() {
   cat <<'EOF'
@@ -21,6 +22,7 @@ Options:
   --install-dir DIR      Directory to install the binary. Default: /usr/local/bin
   --no-verify            Skip checksum verification.
   --dry-run              Print what would be installed without downloading.
+  --uninstall            Remove the installed binary from the install directory.
   -h, --help             Show this help.
 
 Environment:
@@ -29,6 +31,7 @@ Environment:
   INSTALL_DIR
   VERIFY_CHECKSUM=0
   DRY_RUN=1
+  UNINSTALL=1
 EOF
 }
 
@@ -54,6 +57,10 @@ while [ "$#" -gt 0 ]; do
       DRY_RUN="1"
       shift
       ;;
+    --uninstall)
+      UNINSTALL="1"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -77,6 +84,30 @@ need() {
     exit 1
   fi
 }
+
+remove_binary() {
+  target="$INSTALL_DIR/$BINARY"
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "Dry run: would remove $target"
+    return
+  fi
+  if [ ! -e "$target" ]; then
+    echo "$BINARY is not installed at $target"
+    return
+  fi
+  if [ -w "$target" ] || [ -w "$INSTALL_DIR" ]; then
+    rm -f "$target"
+  else
+    echo "Removing $target requires elevated permissions."
+    sudo rm -f "$target"
+  fi
+  echo "Removed $target"
+}
+
+if [ "$UNINSTALL" = "1" ]; then
+  remove_binary
+  exit 0
+fi
 
 need curl
 need tar

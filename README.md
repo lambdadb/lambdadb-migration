@@ -32,6 +32,18 @@ Install a specific version:
 sh install.sh --version v0.1.0 --install-dir "$HOME/.local/bin"
 ```
 
+Uninstall the binary:
+
+```bash
+sh install.sh --uninstall
+```
+
+If you installed to a custom directory:
+
+```bash
+sh install.sh --uninstall --install-dir "$HOME/.local/bin"
+```
+
 Review the installer before running it:
 
 ```bash
@@ -108,6 +120,32 @@ Useful migration safety flags:
 `--migration.validation-report` writes a JSON report with pass/fail status, source and accepted counts, LambdaDB `numDocs`, sampled document IDs, compared sample count, query overlap results, and validation errors. Setting it also enables validation.
 
 `--migration.query-overlap` adds dense-vector query overlap checks for validation samples. By default it reports overlap without failing; set `--migration.query-overlap-min-ratio` above `0` to require a minimum average overlap.
+
+## Uninstall
+
+The installer only places a single binary on disk. To remove it:
+
+```bash
+sh install.sh --uninstall
+```
+
+Or remove it manually:
+
+```bash
+sudo rm /usr/local/bin/lambdadb-migration
+```
+
+If you installed into a user directory:
+
+```bash
+rm "$HOME/.local/bin/lambdadb-migration"
+```
+
+Local migration checkpoints are stored in the directory where you ran the migration. Remove them separately if you no longer need resume state:
+
+```bash
+rm -rf .lambdadb-migration
+```
 
 ## Mapping Examples
 

@@ -479,7 +479,7 @@ Added `Dockerfile`, `.dockerignore`, `.goreleaser.yml`, and README install/build
 
 ### Installer Added
 
-`install.sh` installs the matching GitHub Release artifact for Linux/macOS amd64/arm64. It supports `--version`, `--install-dir`, `--repo`, `--no-verify`, and `--dry-run`. It verifies `checksums.txt` by default. The script has been syntax-checked and dry-run locally, but full download/install should be tested after the first GitHub Release exists.
+`install.sh` installs the matching GitHub Release artifact for Linux/macOS amd64/arm64. It supports `--version`, `--install-dir`, `--repo`, `--no-verify`, `--dry-run`, and `--uninstall`. It verifies `checksums.txt` by default. The script has been syntax-checked and dry-run locally, but full download/install should be tested after the first GitHub Release exists.
 
 ### CI Added
 
