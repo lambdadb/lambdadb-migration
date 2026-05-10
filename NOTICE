@@ -1,0 +1,8 @@
+LambdaDB Migration
+
+This project is licensed under the Apache License, Version 2.0.
+
+This project may include code and design ideas adapted from qdrant/migration,
+Copyright 2024 Qdrant Solutions GmbH, licensed under the Apache License,
+Version 2.0. Files that substantially adapt Qdrant source code should carry
+their own attribution header.
