@@ -36,6 +36,15 @@ Create a local release snapshot with GoReleaser:
 goreleaser release --snapshot --clean
 ```
 
+Publish a GitHub release after the repository remote is configured:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Tag pushes matching `v*` run the release workflow and publish GoReleaser artifacts to GitHub Releases.
+
 ## Mapping Files
 
 Generate an inventory and editable mapping from Qdrant:
@@ -138,7 +147,7 @@ LAMBDADB_PROJECT_API_KEY="$LAMBDADB_PROJECT_API_KEY" \
 go test ./integration_tests -run TestQdrantToRealLambdaDBSmoke -count=1 -v
 ```
 
-Local `.env` files are ignored by git. Prefer `.env.local` for reusable local credentials, and do not commit real API keys.
+Local `.env` files are ignored by git. Copy `.env.example` to `.env.local` for reusable local credentials, and do not commit real API keys.
 
 The real smoke suite creates temporary LambdaDB collections, verifies migrated documents with strongly consistent fetches, and deletes the collections in cleanup. It currently covers unnamed dense upsert, named dense upsert, dense+sparse payload-index upsert, additional payload index types, unnamed dense bulk write mode, and a larger dense bulk fixture.
 

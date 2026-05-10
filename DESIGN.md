@@ -524,11 +524,18 @@ This is not legal advice; before public release, have counsel confirm the attrib
 
 ### Phase 2: Usability
 
-- Add `inventory qdrant` command.
-- Add validation report.
-- Add better progress and summary output.
-- Add Docker image.
-- Add README examples for Qdrant dense, named vector, and hybrid migrations.
+Implemented:
+
+- `inventory qdrant` command.
+- Validation report and dense-vector query overlap checks.
+- Progress and summary output.
+- Docker image and GoReleaser snapshot/release configuration.
+- README examples for Qdrant dense, named vector, and hybrid-style migrations.
+
+Remaining:
+
+- Extend query overlap validation to sparse, hybrid, and filter-heavy queries if needed.
+- Add real-service controlled failure/retry coverage if LambdaDB exposes a safe fixture for 429/5xx behavior.
 
 ### Phase 3: More Sources
 

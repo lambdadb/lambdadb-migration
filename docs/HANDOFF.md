@@ -1,6 +1,6 @@
 # LambdaDB Migration Handoff
 
-Last updated: 2026-05-10
+Last updated: 2026-05-11
 
 This document records the current implementation state so work can continue in another chat/session without rediscovering context.
 
@@ -70,6 +70,7 @@ The architecture intentionally does not fork Qdrant's repository as-is. It uses 
 ```text
 .
 ├── .dockerignore
+├── .env.example
 ├── .goreleaser.yml
 ├── Dockerfile
 ├── DESIGN.md
