@@ -14,6 +14,7 @@ The folder is now a git repository. Baseline scaffold commit:
 
 ```bash
 5762535 Initial LambdaDB migration scaffold
+d087187 Fix checkpoint cursors and split write batches
 ```
 
 ## Product Direction
@@ -421,14 +422,13 @@ Suggested fixtures:
 
 ## Suggested Next Work Order
 
-1. Commit the checkpoint cursor and batch-splitting changes.
-2. Add mapping validation before collection creation/writes.
-3. Add field-name normalization and collision detection.
-4. Add YAML support or explicitly document JSON-only V1.
-5. Add Qdrant docker compose fixture and a LambdaDB mock server integration test.
-6. Run a real local Qdrant inventory test.
-7. Run a controlled LambdaDB test project migration with a tiny dataset.
-8. Add progress output that is nicer than plain `accepted x/y`.
+1. Add mapping validation before collection creation/writes.
+2. Add field-name normalization and collision detection.
+3. Add YAML support or explicitly document JSON-only V1.
+4. Add Qdrant docker compose fixture and a LambdaDB mock server integration test.
+5. Run a real local Qdrant inventory test.
+6. Run a controlled LambdaDB test project migration with a tiny dataset.
+7. Add progress output that is nicer than plain `accepted x/y`.
 
 ## Files To Read First In The Next Session
 
