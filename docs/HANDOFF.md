@@ -17,6 +17,7 @@ The folder is now a git repository. Baseline scaffold commit:
 d087187 Fix checkpoint cursors and split write batches
 43f9d1c Update handoff after batch work
 ca7906c Add migration mapping validation
+a807423 Normalize LambdaDB field names
 ```
 
 ## Product Direction
@@ -70,6 +71,8 @@ The architecture intentionally does not fork Qdrant's repository as-is. It uses 
 ├── cmd/
 │   ├── inventory.go
 │   ├── migrate_from_qdrant.go
+│   ├── output.go
+│   ├── output_test.go
 │   └── root.go
 ├── docs/
 │   └── HANDOFF.md
@@ -85,6 +88,8 @@ The architecture intentionally does not fork Qdrant's repository as-is. It uses 
 │   │   ├── from_inventory.go
 │   │   ├── from_inventory_test.go
 │   │   ├── mapping.go
+│   │   ├── mapping_io.go
+│   │   ├── mapping_io_test.go
 │   │   ├── mapping_validation.go
 │   │   ├── mapping_validation_test.go
 │   │   ├── migration.go
@@ -128,7 +133,7 @@ go run . qdrant --help
 
 Commands:
 
-- `inventory qdrant`: connects to Qdrant, inspects collection metadata/count, and emits JSON containing inventory plus generated LambdaDB mapping.
+- `inventory qdrant`: connects to Qdrant, inspects collection metadata/count, and emits JSON/YAML containing inventory plus generated LambdaDB mapping.
 - `qdrant`: connects to Qdrant and LambdaDB, optionally creates LambdaDB collection, scrolls Qdrant points, transforms to LambdaDB documents, writes to LambdaDB, and saves a local checkpoint.
 
 ### Config
@@ -139,6 +144,7 @@ Implemented in `internal/config`:
 - `LambdaDBConfig`
 - `MigrationConfig`
 - `MappingConfig`
+- `DecodeMapping`
 - `MappingFromInventory`
 - `ValidateMapping`
 - `NormalizeFieldName`
@@ -311,7 +317,7 @@ Inventory a local Qdrant collection:
 go run . inventory qdrant \
   --qdrant.url http://localhost:6334 \
   --qdrant.collection articles \
-  --output qdrant-inventory.json
+  --output qdrant-inventory.yaml
 ```
 
 Dry-run a migration:
@@ -348,25 +354,16 @@ go run . qdrant \
   --lambdadb.project-name playground \
   --lambdadb.api-key "$LAMBDADB_PROJECT_API_KEY" \
   --lambdadb.collection articles \
-  --mapping-file qdrant-inventory.json
+  --mapping-file qdrant-inventory.yaml
 ```
 
-Note: `--mapping-file` currently accepts either a direct `MappingConfig` JSON object or the wrapped JSON produced by `inventory qdrant`.
+Note: `inventory qdrant` writes YAML for `.yaml`/`.yml` outputs and JSON otherwise. `--mapping-file` accepts either JSON or YAML, as a direct `MappingConfig` object or the wrapped output produced by `inventory qdrant`.
 
 ## Known Gaps / Risks
 
 ### Not Yet E2E Tested Against Real Services
 
 The code compiles and unit tests pass, but no Qdrant/LambdaDB end-to-end migration has been run yet in this workspace.
-
-### YAML Mapping Not Implemented
-
-Design mentions JSON/YAML. Current code only reads JSON.
-
-Options:
-
-- add `gopkg.in/yaml.v3`
-- or keep V1 JSON-only and update docs/README accordingly
 
 ### LambdaDB Collection Creation Is Basic
 
@@ -426,11 +423,10 @@ Suggested fixtures:
 
 ## Suggested Next Work Order
 
-1. Add YAML support or explicitly document JSON-only V1.
-2. Add Qdrant docker compose fixture and a LambdaDB mock server integration test.
-3. Run a real local Qdrant inventory test.
-4. Run a controlled LambdaDB test project migration with a tiny dataset.
-5. Add progress output that is nicer than plain `accepted x/y`.
+1. Add Qdrant docker compose fixture and a LambdaDB mock server integration test.
+2. Run a real local Qdrant inventory test.
+3. Run a controlled LambdaDB test project migration with a tiny dataset.
+4. Add progress output that is nicer than plain `accepted x/y`.
 
 ## Files To Read First In The Next Session
 

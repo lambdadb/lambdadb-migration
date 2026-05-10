@@ -3,7 +3,7 @@ package source
 import "context"
 
 type Cursor struct {
-	Value any `json:"value,omitempty"`
+	Value any `json:"value,omitempty" yaml:"value,omitempty"`
 }
 
 type Batch struct {
@@ -25,28 +25,28 @@ type VectorValue struct {
 }
 
 type Inventory struct {
-	SourceKind     string
-	CollectionName string
-	RecordCount    uint64
-	Vectors        map[string]VectorField
-	SparseVectors  map[string]SparseVectorField
-	PayloadIndexes map[string]PayloadIndex
-	Warnings       []string
+	SourceKind     string                       `json:"sourceKind" yaml:"sourceKind"`
+	CollectionName string                       `json:"collectionName" yaml:"collectionName"`
+	RecordCount    uint64                       `json:"recordCount" yaml:"recordCount"`
+	Vectors        map[string]VectorField       `json:"vectors" yaml:"vectors"`
+	SparseVectors  map[string]SparseVectorField `json:"sparseVectors" yaml:"sparseVectors"`
+	PayloadIndexes map[string]PayloadIndex      `json:"payloadIndexes" yaml:"payloadIndexes"`
+	Warnings       []string                     `json:"warnings,omitempty" yaml:"warnings,omitempty"`
 }
 
 type VectorField struct {
-	Name       string
-	Dimensions int64
-	Similarity string
+	Name       string `json:"name" yaml:"name"`
+	Dimensions int64  `json:"dimensions" yaml:"dimensions"`
+	Similarity string `json:"similarity" yaml:"similarity"`
 }
 
 type SparseVectorField struct {
-	Name string
+	Name string `json:"name" yaml:"name"`
 }
 
 type PayloadIndex struct {
-	Name string
-	Type string
+	Name string `json:"name" yaml:"name"`
+	Type string `json:"type" yaml:"type"`
 }
 
 type Source interface {

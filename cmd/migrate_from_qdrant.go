@@ -21,7 +21,7 @@ type MigrateQdrantCmd struct {
 	Qdrant      config.QdrantConfig    `embed:"" prefix:"qdrant."`
 	LambdaDB    config.LambdaDBConfig  `embed:"" prefix:"lambdadb."`
 	Migration   config.MigrationConfig `embed:"" prefix:"migration."`
-	MappingFile string                 `help:"Path to a migration mapping file."`
+	MappingFile string                 `help:"Path to a JSON or YAML migration mapping file."`
 }
 
 func (c *MigrateQdrantCmd) Run(globals *Globals) error {
@@ -137,20 +137,11 @@ func (c *MigrateQdrantCmd) loadMapping(inv *source.Inventory) (config.MappingCon
 	if err != nil {
 		return config.MappingConfig{}, fmt.Errorf("read mapping file: %w", err)
 	}
-	var direct config.MappingConfig
-	if err := json.Unmarshal(data, &direct); err == nil && direct.Target.Collection != "" {
-		return direct, nil
-	}
-	var wrapped struct {
-		Mapping config.MappingConfig `json:"mapping"`
-	}
-	if err := json.Unmarshal(data, &wrapped); err != nil {
+	mapping, err := config.DecodeMapping(data)
+	if err != nil {
 		return config.MappingConfig{}, fmt.Errorf("decode mapping file: %w", err)
 	}
-	if wrapped.Mapping.Target.Collection == "" {
-		return config.MappingConfig{}, fmt.Errorf("mapping file does not contain target.collection")
-	}
-	return wrapped.Mapping, nil
+	return mapping, nil
 }
 
 func printDryRun(recordCount uint64, mapping config.MappingConfig) error {

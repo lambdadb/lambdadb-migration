@@ -8,6 +8,8 @@ require (
 	google.golang.org/grpc v1.78.0
 )
 
+require gopkg.in/yaml.v3 v3.0.1
+
 require (
 	github.com/qdrant/go-client v1.17.1
 	golang.org/x/net v0.50.0 // indirect

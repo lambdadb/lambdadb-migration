@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 
@@ -16,7 +15,7 @@ type InventoryCmd struct {
 
 type InventoryQdrantCmd struct {
 	Qdrant config.QdrantConfig `embed:"" prefix:"qdrant."`
-	Output string              `help:"Output path for generated mapping. Use '-' for stdout." default:"-"`
+	Output string              `help:"Output path for generated mapping. Use '-' for stdout. .yaml/.yml outputs use YAML; other outputs use JSON." default:"-"`
 }
 
 func (c *InventoryQdrantCmd) Run(globals *Globals) error {
@@ -34,18 +33,17 @@ func (c *InventoryQdrantCmd) Run(globals *Globals) error {
 
 	mapping := config.MappingFromInventory(inv, c.Qdrant.Collection)
 	out := struct {
-		Inventory any                  `json:"inventory"`
-		Mapping   config.MappingConfig `json:"mapping"`
+		Inventory any                  `json:"inventory" yaml:"inventory"`
+		Mapping   config.MappingConfig `json:"mapping" yaml:"mapping"`
 	}{
 		Inventory: inv,
 		Mapping:   mapping,
 	}
 
-	data, err := json.MarshalIndent(out, "", "  ")
+	data, err := marshalOutput(c.Output, out)
 	if err != nil {
 		return fmt.Errorf("encode inventory: %w", err)
 	}
-	data = append(data, '\n')
 
 	if c.Output == "-" {
 		_, err = os.Stdout.Write(data)
@@ -54,6 +52,6 @@ func (c *InventoryQdrantCmd) Run(globals *Globals) error {
 	if err := os.WriteFile(c.Output, data, 0o644); err != nil {
 		return fmt.Errorf("write inventory output: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "wrote inventory mapping to %s\n", c.Output)
+	fmt.Fprintf(os.Stderr, "wrote %s inventory mapping to %s\n", outputFormatName(c.Output), c.Output)
 	return nil
 }
