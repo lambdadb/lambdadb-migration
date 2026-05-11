@@ -413,7 +413,8 @@ Dry-run a migration:
 go run . qdrant \
   --qdrant.url http://localhost:6334 \
   --qdrant.collection articles \
-  --lambdadb.project-name playground \
+  --lambdadb.base-url "$LAMBDADB_BASE_URL" \
+  --lambdadb.project-name "$LAMBDADB_PROJECT_NAME" \
   --lambdadb.api-key "$LAMBDADB_PROJECT_API_KEY" \
   --lambdadb.collection articles \
   --migration.dry-run
@@ -425,7 +426,8 @@ Run migration with generated/default mapping:
 go run . qdrant \
   --qdrant.url http://localhost:6334 \
   --qdrant.collection articles \
-  --lambdadb.project-name playground \
+  --lambdadb.base-url "$LAMBDADB_BASE_URL" \
+  --lambdadb.project-name "$LAMBDADB_PROJECT_NAME" \
   --lambdadb.api-key "$LAMBDADB_PROJECT_API_KEY" \
   --lambdadb.collection articles \
   --migration.batch-size 500 \
@@ -438,7 +440,8 @@ Run migration with explicit mapping file:
 go run . qdrant \
   --qdrant.url http://localhost:6334 \
   --qdrant.collection articles \
-  --lambdadb.project-name playground \
+  --lambdadb.base-url "$LAMBDADB_BASE_URL" \
+  --lambdadb.project-name "$LAMBDADB_PROJECT_NAME" \
   --lambdadb.api-key "$LAMBDADB_PROJECT_API_KEY" \
   --lambdadb.collection articles \
   --mapping-file qdrant-inventory.yaml

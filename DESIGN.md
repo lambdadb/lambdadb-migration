@@ -292,8 +292,8 @@ lambdadb-migration qdrant \
   --qdrant.url http://localhost:6334 \
   --qdrant.api-key "$QDRANT_API_KEY" \
   --qdrant.collection articles \
-  --lambdadb.base-url https://api.lambdadb.ai \
-  --lambdadb.project-name playground \
+  --lambdadb.base-url "$LAMBDADB_BASE_URL" \
+  --lambdadb.project-name "$LAMBDADB_PROJECT_NAME" \
   --lambdadb.api-key "$LAMBDADB_PROJECT_API_KEY" \
   --lambdadb.collection articles \
   --migration.batch-size 500 \

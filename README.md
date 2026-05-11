@@ -6,7 +6,7 @@ The first supported source is Qdrant. LambdaDB is the only target.
 
 ## Quickstart
 
-Install the latest release after the first GitHub release is published:
+Install the latest release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lambdadb/lambdadb-migration/main/install.sh | sh
@@ -29,7 +29,7 @@ lambdadb-migration qdrant --help
 Install a specific version:
 
 ```bash
-sh install.sh --version v0.1.0 --install-dir "$HOME/.local/bin"
+sh install.sh --version v0.1.1 --install-dir "$HOME/.local/bin"
 ```
 
 Uninstall the binary:
@@ -54,10 +54,12 @@ sh install.sh
 
 ## Qdrant To LambdaDB
 
-Set your LambdaDB API key:
+Set your LambdaDB connection values from the LambdaDB Cloud console. LambdaDB Cloud uses region-specific API base URLs, so do not assume a global default URL or a fixed project name.
 
 ```bash
-export LAMBDADB_PROJECT_API_KEY="..."
+export LAMBDADB_BASE_URL="your-region-specific-lambdadb-base-url"
+export LAMBDADB_PROJECT_NAME="your-lambdadb-project-name"
+export LAMBDADB_PROJECT_API_KEY="your-project-api-key"
 ```
 
 Generate an inventory and editable mapping from Qdrant:
@@ -75,7 +77,8 @@ Review `qdrant-inventory.yaml`, then run a dry-run:
 lambdadb-migration qdrant \
   --qdrant.url http://localhost:6334 \
   --qdrant.collection articles \
-  --lambdadb.project-name playground \
+  --lambdadb.base-url "$LAMBDADB_BASE_URL" \
+  --lambdadb.project-name "$LAMBDADB_PROJECT_NAME" \
   --lambdadb.api-key "$LAMBDADB_PROJECT_API_KEY" \
   --lambdadb.collection articles \
   --mapping-file qdrant-inventory.yaml \
@@ -88,7 +91,8 @@ Run the migration with validation:
 lambdadb-migration qdrant \
   --qdrant.url http://localhost:6334 \
   --qdrant.collection articles \
-  --lambdadb.project-name playground \
+  --lambdadb.base-url "$LAMBDADB_BASE_URL" \
+  --lambdadb.project-name "$LAMBDADB_PROJECT_NAME" \
   --lambdadb.api-key "$LAMBDADB_PROJECT_API_KEY" \
   --lambdadb.collection articles \
   --mapping-file qdrant-inventory.yaml \
