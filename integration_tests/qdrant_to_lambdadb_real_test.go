@@ -205,7 +205,7 @@ func TestQdrantToRealLambdaDBSmoke(t *testing.T) {
 					MaxBatchBytes:        6_000_000,
 					WriteMode:            tt.writeMode,
 					Restart:              true,
-					CreateCollection:     true,
+					CreateCollection:     boolPtr(true),
 					Validate:             true,
 					ValidationSampleSize: 10,
 					QueryOverlap:         tt.queryOverlap,

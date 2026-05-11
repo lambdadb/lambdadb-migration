@@ -23,6 +23,10 @@ import (
 	qdrantapi "github.com/qdrant/go-client/qdrant"
 )
 
+func boolPtr(value bool) *bool {
+	return &value
+}
+
 func TestQdrantToLambdaDBMockIntegration(t *testing.T) {
 	if os.Getenv("LAMBDADB_MIGRATION_RUN_INTEGRATION") != "1" {
 		t.Skip("set LAMBDADB_MIGRATION_RUN_INTEGRATION=1 and run Qdrant from integration_tests/compose/qdrant.yaml")
@@ -182,7 +186,7 @@ func TestQdrantToLambdaDBMockIntegration(t *testing.T) {
 					MaxBatchBytes:        6_000_000,
 					WriteMode:            config.WriteModeUpsert,
 					Restart:              true,
-					CreateCollection:     true,
+					CreateCollection:     boolPtr(true),
 					Validate:             tt.wantErr == "",
 					ValidationSampleSize: 10,
 					CheckpointPath:       t.TempDir(),
@@ -251,7 +255,7 @@ func TestQdrantToLambdaDBCheckpointCleanup(t *testing.T) {
 			MaxBatchBytes:        6_000_000,
 			WriteMode:            config.WriteModeUpsert,
 			Restart:              true,
-			CreateCollection:     true,
+			CreateCollection:     boolPtr(true),
 			Validate:             true,
 			ValidationSampleSize: 2,
 			ValidationReport:     reportPath,

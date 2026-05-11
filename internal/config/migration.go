@@ -14,7 +14,7 @@ type MigrationConfig struct {
 	MaxBatchBytes        int64     `help:"Maximum serialized LambdaDB upsert payload size per write." default:"200000000"`
 	WriteMode            WriteMode `help:"LambdaDB write mode." enum:"bulk,upsert" default:"bulk"`
 	Restart              bool      `help:"Ignore existing checkpoints and start from the beginning."`
-	CreateCollection     bool      `help:"Create the target LambdaDB collection if missing." default:"true"`
+	CreateCollection     *bool     `help:"Create the target LambdaDB collection if missing. Set to false to require an existing collection. Overrides target.createCollection in the mapping file."`
 	DryRun               bool      `help:"Inspect and validate without writing documents."`
 	Validate             bool      `help:"Run validation after migration."`
 	ValidationSampleSize int       `help:"Number of migrated sample documents to fetch during validation. Set to 0 for count-only validation." default:"10"`
@@ -28,6 +28,13 @@ type MigrationConfig struct {
 	RetryMaxAttempts     int       `help:"Maximum LambdaDB write attempts for transient failures." default:"5"`
 	RetryInitialDelayMS  int       `help:"Initial LambdaDB write retry delay in milliseconds." default:"500"`
 	RetryMaxDelayMS      int       `help:"Maximum LambdaDB write retry delay in milliseconds." default:"5000"`
+}
+
+func (c MigrationConfig) ApplyToMapping(mapping MappingConfig) MappingConfig {
+	if c.CreateCollection != nil {
+		mapping.Target.CreateCollection = *c.CreateCollection
+	}
+	return mapping
 }
 
 func (c MigrationConfig) ValidateConfig() error {

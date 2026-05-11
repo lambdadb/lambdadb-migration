@@ -106,6 +106,7 @@ Migration progress is written to stderr with accepted count, percent, batch size
 Useful migration safety flags:
 
 ```text
+--migration.create-collection=false
 --migration.validation-sample-size 10
 --migration.validation-report validation-report.json
 --migration.query-overlap
@@ -116,6 +117,8 @@ Useful migration safety flags:
 --migration.retry-max-delay-ms 5000
 --migration.cleanup-checkpoint
 ```
+
+Generated inventory mappings set `target.createCollection: true` by default, so the migration creates the LambdaDB collection when it is missing. Use `--migration.create-collection=false` to require the target collection to exist, or `--migration.create-collection=true` to override a mapping file that has collection creation disabled.
 
 `--migration.validation-report` writes a JSON report with pass/fail status, source and accepted counts, LambdaDB `numDocs`, sampled document IDs, compared sample count, query overlap results, and validation errors. Setting it also enables validation.
 

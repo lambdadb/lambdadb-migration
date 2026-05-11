@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/lambdadb/lambdadb-migration/internal/config"
+	"github.com/lambdadb/lambdadb-migration/internal/source"
 )
 
 type fakeValidationTarget struct {
@@ -159,4 +160,90 @@ func TestValidateQueryOverlapRejectsLowAverageOverlap(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "below minimum") {
 		t.Fatalf("validateQueryOverlap() error = %v, want below minimum", err)
 	}
+}
+
+func TestMigrationCreateCollectionOverrideAppliesToGeneratedMapping(t *testing.T) {
+	cmd := MigrateQdrantCmd{
+		LambdaDB: config.LambdaDBConfig{Collection: "articles"},
+		Migration: config.MigrationConfig{
+			CreateCollection: testBoolPtr(false),
+		},
+	}
+
+	mapping, err := cmd.loadMapping(emptyInventory())
+	if err != nil {
+		t.Fatalf("loadMapping() error = %v", err)
+	}
+	mapping = cmd.Migration.ApplyToMapping(mapping)
+	if mapping.Target.CreateCollection {
+		t.Fatalf("createCollection = true, want false from CLI override")
+	}
+}
+
+func TestMigrationCreateCollectionOverrideAppliesToMappingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mapping.yaml")
+	if err := os.WriteFile(path, []byte(`
+target:
+  collection: articles
+  createCollection: false
+payload:
+  mode: flatten
+ids:
+  targetField: id
+`), 0o600); err != nil {
+		t.Fatalf("write mapping file: %v", err)
+	}
+
+	cmd := MigrateQdrantCmd{
+		Migration: config.MigrationConfig{
+			CreateCollection: testBoolPtr(true),
+		},
+		MappingFile: path,
+	}
+
+	mapping, err := cmd.loadMapping(emptyInventory())
+	if err != nil {
+		t.Fatalf("loadMapping() error = %v", err)
+	}
+	mapping = cmd.Migration.ApplyToMapping(mapping)
+	if !mapping.Target.CreateCollection {
+		t.Fatalf("createCollection = false, want true from CLI override")
+	}
+}
+
+func TestMigrationCreateCollectionUnsetPreservesMappingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mapping.yaml")
+	if err := os.WriteFile(path, []byte(`
+target:
+  collection: articles
+  createCollection: false
+payload:
+  mode: flatten
+ids:
+  targetField: id
+`), 0o600); err != nil {
+		t.Fatalf("write mapping file: %v", err)
+	}
+
+	cmd := MigrateQdrantCmd{MappingFile: path}
+	mapping, err := cmd.loadMapping(emptyInventory())
+	if err != nil {
+		t.Fatalf("loadMapping() error = %v", err)
+	}
+	mapping = cmd.Migration.ApplyToMapping(mapping)
+	if mapping.Target.CreateCollection {
+		t.Fatalf("createCollection = true, want mapping file value preserved")
+	}
+}
+
+func emptyInventory() *source.Inventory {
+	return &source.Inventory{
+		Vectors:        map[string]source.VectorField{},
+		SparseVectors:  map[string]source.SparseVectorField{},
+		PayloadIndexes: map[string]source.PayloadIndex{},
+	}
+}
+
+func testBoolPtr(value bool) *bool {
+	return &value
 }

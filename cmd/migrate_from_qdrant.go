@@ -53,6 +53,7 @@ func (c *MigrateQdrantCmd) Run(globals *Globals) error {
 	if err != nil {
 		return err
 	}
+	mapping = c.Migration.ApplyToMapping(mapping)
 	if err := config.ValidateMapping(inv, mapping, c.LambdaDB.Collection, c.Migration.WriteMode); err != nil {
 		return err
 	}
