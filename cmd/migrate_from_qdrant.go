@@ -240,6 +240,7 @@ type queryOverlapReport struct {
 
 type queryOverlapCompare struct {
 	SampleID     string   `json:"sampleId"`
+	Kind         string   `json:"kind"`
 	VectorField  string   `json:"vectorField"`
 	SourceIDs    []string `json:"sourceIds"`
 	TargetIDs    []string `json:"targetIds"`
@@ -251,8 +252,13 @@ type queryOverlapSource interface {
 	SearchDense(context.Context, string, []float32, int) ([]string, error)
 }
 
+type sparseQueryOverlapSource interface {
+	SearchSparse(context.Context, string, map[string]float32, int) ([]string, error)
+}
+
 type queryOverlapTarget interface {
 	QueryKNN(context.Context, string, string, []float32, int) ([]string, error)
+	QuerySparse(context.Context, string, string, map[string]float32, int) ([]string, error)
 }
 
 func validateMigration(ctx context.Context, target validationTarget, sourceCount, accepted uint64, samples []map[string]any, mapping config.MappingConfig) (validationReport, error) {
@@ -378,47 +384,48 @@ func validateQueryOverlap(ctx context.Context, src queryOverlapSource, target qu
 		idField = "id"
 	}
 	vectorSources := sortedVectorSources(mapping.Vectors)
-	if len(vectorSources) == 0 {
+	sparseSources := sortedSparseVectorSources(mapping.SparseVectors)
+	if len(vectorSources) == 0 && len(sparseSources) == 0 {
 		report.Skipped = true
-		report.SkipReason = "no dense vector mappings"
+		report.SkipReason = "no vector mappings"
 		return report, nil
 	}
+	sparseSrc, supportsSparse := src.(sparseQueryOverlapSource)
 
 	var totalRatio float64
 	for _, sample := range samples {
 		sampleID, _ := sample[idField].(string)
 		sourceName, targetField, vector, ok := queryOverlapVector(sample, mapping, vectorSources)
-		if !ok {
-			continue
+		if ok {
+			sourceIDs, err := src.SearchDense(ctx, sourceName, vector, limit)
+			if err != nil {
+				return report, fmt.Errorf("query overlap source dense search for sample %q: %w", sampleID, err)
+			}
+			targetIDs, err := target.QueryKNN(ctx, idField, targetField, vector, limit)
+			if err != nil {
+				return report, fmt.Errorf("query overlap LambdaDB dense search for sample %q: %w", sampleID, err)
+			}
+			totalRatio += appendQueryOverlapComparison(&report, "dense", sampleID, targetField, sourceIDs, targetIDs)
 		}
-		sourceIDs, err := src.SearchDense(ctx, sourceName, vector, limit)
-		if err != nil {
-			return report, fmt.Errorf("query overlap source search for sample %q: %w", sampleID, err)
+		if supportsSparse {
+			sparseSourceName, sparseTargetField, sparseVector, sparseOK := queryOverlapSparseVector(sample, mapping, sparseSources)
+			if sparseOK {
+				sourceIDs, err := sparseSrc.SearchSparse(ctx, sparseSourceName, sparseVector, limit)
+				if err != nil {
+					return report, fmt.Errorf("query overlap source sparse search for sample %q: %w", sampleID, err)
+				}
+				targetIDs, err := target.QuerySparse(ctx, idField, sparseTargetField, sparseVector, limit)
+				if err != nil {
+					return report, fmt.Errorf("query overlap LambdaDB sparse search for sample %q: %w", sampleID, err)
+				}
+				totalRatio += appendQueryOverlapComparison(&report, "sparse", sampleID, sparseTargetField, sourceIDs, targetIDs)
+			}
 		}
-		targetIDs, err := target.QueryKNN(ctx, idField, targetField, vector, limit)
-		if err != nil {
-			return report, fmt.Errorf("query overlap LambdaDB search for sample %q: %w", sampleID, err)
-		}
-		overlapIDs := intersectOrdered(sourceIDs, targetIDs)
-		denominator := minInt(len(sourceIDs), len(targetIDs))
-		var ratio float64
-		if denominator > 0 {
-			ratio = float64(len(overlapIDs)) / float64(denominator)
-		}
-		report.Comparisons = append(report.Comparisons, queryOverlapCompare{
-			SampleID:     sampleID,
-			VectorField:  targetField,
-			SourceIDs:    sourceIDs,
-			TargetIDs:    targetIDs,
-			OverlapIDs:   overlapIDs,
-			OverlapRatio: ratio,
-		})
-		totalRatio += ratio
 	}
 	report.Compared = len(report.Comparisons)
 	if report.Compared == 0 {
 		report.Skipped = true
-		report.SkipReason = "no sampled dense vectors"
+		report.SkipReason = "no sampled vectors"
 		return report, nil
 	}
 	report.AverageRatio = totalRatio / float64(report.Compared)
@@ -430,6 +437,17 @@ func validateQueryOverlap(ctx context.Context, src queryOverlapSource, target qu
 }
 
 func sortedVectorSources(vectors map[string]config.VectorMapping) []string {
+	out := make([]string, 0, len(vectors))
+	for sourceName := range vectors {
+		out = append(out, sourceName)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return querySourceSortName(out[i]) < querySourceSortName(out[j])
+	})
+	return out
+}
+
+func sortedSparseVectorSources(vectors map[string]config.SparseVectorMapping) []string {
 	out := make([]string, 0, len(vectors))
 	for sourceName := range vectors {
 		out = append(out, sourceName)
@@ -461,6 +479,39 @@ func queryOverlapVector(sample map[string]any, mapping config.MappingConfig, sou
 	return "", "", nil, false
 }
 
+func queryOverlapSparseVector(sample map[string]any, mapping config.MappingConfig, sourceNames []string) (string, string, map[string]float32, bool) {
+	for _, sourceName := range sourceNames {
+		targetField := mapping.SparseVectors[sourceName].TargetField
+		if targetField == "" {
+			targetField = sourceName
+		}
+		vector, ok := asSparseFloat32Map(sample[targetField])
+		if ok {
+			return sourceName, targetField, vector, true
+		}
+	}
+	return "", "", nil, false
+}
+
+func appendQueryOverlapComparison(report *queryOverlapReport, kind, sampleID, targetField string, sourceIDs, targetIDs []string) float64 {
+	overlapIDs := intersectOrdered(sourceIDs, targetIDs)
+	denominator := minInt(len(sourceIDs), len(targetIDs))
+	var ratio float64
+	if denominator > 0 {
+		ratio = float64(len(overlapIDs)) / float64(denominator)
+	}
+	report.Comparisons = append(report.Comparisons, queryOverlapCompare{
+		SampleID:     sampleID,
+		Kind:         kind,
+		VectorField:  targetField,
+		SourceIDs:    sourceIDs,
+		TargetIDs:    targetIDs,
+		OverlapIDs:   overlapIDs,
+		OverlapRatio: ratio,
+	})
+	return ratio
+}
+
 func asFloat32Slice(value any) ([]float32, bool) {
 	switch v := value.(type) {
 	case []float32:
@@ -473,6 +524,31 @@ func asFloat32Slice(value any) ([]float32, bool) {
 				return nil, false
 			}
 			out = append(out, float32(f))
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
+func asSparseFloat32Map(value any) (map[string]float32, bool) {
+	switch v := value.(type) {
+	case map[string]float32:
+		if len(v) == 0 {
+			return nil, false
+		}
+		return v, true
+	case map[string]any:
+		if len(v) == 0 {
+			return nil, false
+		}
+		out := make(map[string]float32, len(v))
+		for key, item := range v {
+			f, ok := asFloat64(item)
+			if !ok {
+				return nil, false
+			}
+			out[key] = float32(f)
 		}
 		return out, true
 	default:

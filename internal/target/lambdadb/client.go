@@ -282,3 +282,35 @@ func (t *Target) QueryKNN(ctx context.Context, idField, field string, vector []f
 	}
 	return ids, nil
 }
+
+func (t *Target) QuerySparse(ctx context.Context, idField, field string, vector map[string]float32, limit int) ([]string, error) {
+	if limit < 1 {
+		return nil, fmt.Errorf("query limit must be greater than 0")
+	}
+	if len(vector) == 0 {
+		return nil, fmt.Errorf("sparse query vector must not be empty")
+	}
+	result, err := t.client.Collection(t.collection).Query(ctx, sdk.QueryInput{
+		Size: sdk.Int64(int64(limit)),
+		Query: map[string]any{
+			"sparseVector": map[string]any{
+				"field":       field,
+				"queryVector": vector,
+			},
+		},
+		ConsistentRead: sdk.Bool(consistentRead),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, nil
+	}
+	ids := make([]string, 0, len(result.Docs))
+	for _, doc := range result.Docs {
+		if id, ok := doc.Doc[idField].(string); ok && id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}

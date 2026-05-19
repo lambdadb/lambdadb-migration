@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
 
 	qdrantapi "github.com/qdrant/go-client/qdrant"
@@ -98,6 +99,64 @@ func (s *Source) SearchDense(ctx context.Context, vectorName string, vector []fl
 		ids = append(ids, pointIDToString(point.GetId()))
 	}
 	return ids, nil
+}
+
+func (s *Source) SearchSparse(ctx context.Context, vectorName string, vector map[string]float32, limit int) ([]string, error) {
+	if limit < 1 {
+		return nil, fmt.Errorf("search limit must be greater than 0")
+	}
+	indices, values, err := sparseMapToQdrantVector(vector)
+	if err != nil {
+		return nil, err
+	}
+	exact := true
+	var vectorNamePtr *string
+	if vectorName != "" {
+		vectorNamePtr = &vectorName
+	}
+	resp, err := s.client.GetPointsClient().Search(ctx, &qdrantapi.SearchPoints{
+		CollectionName: s.cfg.Collection,
+		Vector:         values,
+		VectorName:     vectorNamePtr,
+		Limit:          uint64(limit),
+		WithPayload:    qdrantapi.NewWithPayload(false),
+		WithVectors:    qdrantapi.NewWithVectors(false),
+		Params:         &qdrantapi.SearchParams{Exact: &exact},
+		SparseIndices:  &qdrantapi.SparseIndices{Data: indices},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("search qdrant sparse points: %w", err)
+	}
+	ids := make([]string, 0, len(resp.GetResult()))
+	for _, point := range resp.GetResult() {
+		ids = append(ids, pointIDToString(point.GetId()))
+	}
+	return ids, nil
+}
+
+func sparseMapToQdrantVector(vector map[string]float32) ([]uint32, []float32, error) {
+	if len(vector) == 0 {
+		return nil, nil, fmt.Errorf("sparse search vector must not be empty")
+	}
+	keys := make([]uint64, 0, len(vector))
+	for key := range vector {
+		index, err := strconv.ParseUint(key, 10, 32)
+		if err != nil {
+			return nil, nil, fmt.Errorf("parse sparse vector index %q: %w", key, err)
+		}
+		keys = append(keys, index)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return keys[i] < keys[j]
+	})
+	indices := make([]uint32, 0, len(keys))
+	values := make([]float32, 0, len(keys))
+	for _, key := range keys {
+		keyString := strconv.FormatUint(key, 10)
+		indices = append(indices, uint32(key))
+		values = append(values, vector[keyString])
+	}
+	return indices, values, nil
 }
 
 func (s *Source) Read(ctx context.Context, cursor source.Cursor, limit int) (source.Batch, error) {

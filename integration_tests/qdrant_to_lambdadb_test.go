@@ -229,7 +229,7 @@ func TestQdrantToLambdaDBCheckpointCleanup(t *testing.T) {
 	}
 
 	collection := fmt.Sprintf("lambdadb_migration_it_checkpoint_cleanup_%d", time.Now().UnixNano())
-	seedQdrantCollection(t, ctx, qdrantURL, collection, unnamedDenseFixture())
+	seedQdrantCollection(t, ctx, qdrantURL, collection, denseSparsePayloadIndexFixture())
 
 	mock := newLambdaDBMock(t, "playground", "articles")
 	defer mock.server.Close()
@@ -286,6 +286,9 @@ func TestQdrantToLambdaDBCheckpointCleanup(t *testing.T) {
 		QueryOverlap struct {
 			Compared     int     `json:"compared"`
 			AverageRatio float64 `json:"averageRatio"`
+			Comparisons  []struct {
+				Kind string `json:"kind"`
+			} `json:"comparisons"`
 		} `json:"queryOverlap"`
 	}
 	if err := json.Unmarshal(data, &report); err != nil {
@@ -294,8 +297,15 @@ func TestQdrantToLambdaDBCheckpointCleanup(t *testing.T) {
 	if report.Status != "pass" || report.Samples.Compared != 2 {
 		t.Fatalf("validation report = %#v, want pass with 2 compared samples", report)
 	}
-	if report.QueryOverlap.Compared != 2 || report.QueryOverlap.AverageRatio <= 0 {
-		t.Fatalf("query overlap report = %#v, want compared query overlap", report.QueryOverlap)
+	if report.QueryOverlap.Compared != 4 || report.QueryOverlap.AverageRatio <= 0 {
+		t.Fatalf("query overlap report = %#v, want dense and sparse query overlap", report.QueryOverlap)
+	}
+	kinds := map[string]int{}
+	for _, comparison := range report.QueryOverlap.Comparisons {
+		kinds[comparison.Kind]++
+	}
+	if kinds["dense"] != 2 || kinds["sparse"] != 2 {
+		t.Fatalf("query overlap kinds = %#v, want 2 dense and 2 sparse comparisons", kinds)
 	}
 }
 

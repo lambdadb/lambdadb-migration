@@ -540,10 +540,9 @@ LambdaDB writes now retry transient failures with bounded exponential backoff, c
 
 ### Validation Has Fetch-Based Report And Query Overlap
 
-`--migration.validate` now checks accepted count and compares configurable fetched sample documents. `--migration.validation-report` writes a JSON report and implies validation. `--migration.query-overlap` compares dense-vector nearest-neighbor result overlap between the source and LambdaDB for validation samples. It reports overlap by default and only fails validation when `--migration.query-overlap-min-ratio` is above `0` and the average falls below that threshold. Remaining validation gaps:
+`--migration.validate` now checks accepted count and compares configurable fetched sample documents. `--migration.validation-report` writes a JSON report and implies validation. `--migration.query-overlap` compares dense and sparse vector nearest-neighbor result overlap between the source and LambdaDB for validation samples when those vector mappings are present. It reports overlap by default and only fails validation when `--migration.query-overlap-min-ratio` is above `0` and the average falls below that threshold. Remaining validation gaps:
 
 - `numDocs` is reported but not used as a pass/fail signal because real smoke tests observed it staying at 0 after successful writes and fetches
-- sparse-vector overlap is feasible because Qdrant supports sparse query vectors and LambdaDB supports `sparseVector` queries, but it is not implemented yet
 - hybrid and filter-heavy overlap are technically feasible for curated fixtures, but not generally inferable from mapping alone; they should use explicit representative query fixtures/config if implemented
 
 ### Docker And GoReleaser Snapshot Work
@@ -582,6 +581,7 @@ Current fixtures cover:
 - checkpoint cleanup after successful validation
 - structured validation report creation
 - dense-vector query overlap validation
+- sparse-vector query overlap validation
 - Manhattan distance rejection
 - multi-vector rejection
 
@@ -605,8 +605,8 @@ Completed for current publish scope:
 
 Recommended next work:
 
-1. Review and commit the Pinecone connector, disposable live smoke, env cleanup, and docs updates.
-2. If query validation is the priority, implement sparse-vector query overlap first. Hybrid and filter-heavy overlap should wait for explicit representative query fixtures/config.
+1. Review and commit the sparse-vector query overlap validation changes.
+2. If query validation remains the priority, add explicit representative fixtures/config for hybrid and filter-heavy overlap.
 3. Continue source coverage after Pinecone, likely Chroma or Weaviate depending on customer pull.
 
 ## Files To Read First In The Next Session

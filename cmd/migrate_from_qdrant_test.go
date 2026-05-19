@@ -26,19 +26,29 @@ func (f fakeValidationTarget) Fetch(context.Context, []string) ([]map[string]any
 }
 
 type fakeQuerySource struct {
-	ids []string
+	denseIDs  []string
+	sparseIDs []string
 }
 
 func (f fakeQuerySource) SearchDense(context.Context, string, []float32, int) ([]string, error) {
-	return f.ids, nil
+	return f.denseIDs, nil
+}
+
+func (f fakeQuerySource) SearchSparse(context.Context, string, map[string]float32, int) ([]string, error) {
+	return f.sparseIDs, nil
 }
 
 type fakeQueryTarget struct {
-	ids []string
+	denseIDs  []string
+	sparseIDs []string
 }
 
 func (f fakeQueryTarget) QueryKNN(context.Context, string, string, []float32, int) ([]string, error) {
-	return f.ids, nil
+	return f.denseIDs, nil
+}
+
+func (f fakeQueryTarget) QuerySparse(context.Context, string, string, map[string]float32, int) ([]string, error) {
+	return f.sparseIDs, nil
 }
 
 func TestValidateMigrationComparesSamples(t *testing.T) {
@@ -122,8 +132,8 @@ func TestWriteValidationReport(t *testing.T) {
 func TestValidateQueryOverlapReportsAverageOverlap(t *testing.T) {
 	report, err := validateQueryOverlap(
 		context.Background(),
-		fakeQuerySource{ids: []string{"1", "2", "3"}},
-		fakeQueryTarget{ids: []string{"2", "3", "4"}},
+		fakeQuerySource{denseIDs: []string{"1", "2", "3"}},
+		fakeQueryTarget{denseIDs: []string{"2", "3", "4"}},
 		[]map[string]any{{"id": "1", "dense": []float32{0.1, 0.2}}},
 		config.MappingConfig{
 			Vectors: map[string]config.VectorMapping{
@@ -140,13 +150,42 @@ func TestValidateQueryOverlapReportsAverageOverlap(t *testing.T) {
 	if report.Compared != 1 || report.AverageRatio < 0.66 || report.AverageRatio > 0.67 {
 		t.Fatalf("query overlap report = %#v, want 2/3 overlap", report)
 	}
+	if report.Comparisons[0].Kind != "dense" {
+		t.Fatalf("query overlap kind = %q, want dense", report.Comparisons[0].Kind)
+	}
+}
+
+func TestValidateQueryOverlapReportsSparseOverlap(t *testing.T) {
+	report, err := validateQueryOverlap(
+		context.Background(),
+		fakeQuerySource{sparseIDs: []string{"1", "2"}},
+		fakeQueryTarget{sparseIDs: []string{"2", "3"}},
+		[]map[string]any{{"id": "1", "keywords_sparse": map[string]float32{"3": 0.7, "9": 0.2}}},
+		config.MappingConfig{
+			SparseVectors: map[string]config.SparseVectorMapping{
+				"keywords_sparse": {TargetField: "keywords_sparse"},
+			},
+			IDs: config.IDMapping{TargetField: "id"},
+		},
+		2,
+		0.5,
+	)
+	if err != nil {
+		t.Fatalf("validateQueryOverlap() error = %v", err)
+	}
+	if report.Compared != 1 || report.AverageRatio != 0.5 {
+		t.Fatalf("query overlap report = %#v, want 1/2 overlap", report)
+	}
+	if report.Comparisons[0].Kind != "sparse" {
+		t.Fatalf("query overlap kind = %q, want sparse", report.Comparisons[0].Kind)
+	}
 }
 
 func TestValidateQueryOverlapRejectsLowAverageOverlap(t *testing.T) {
 	_, err := validateQueryOverlap(
 		context.Background(),
-		fakeQuerySource{ids: []string{"1"}},
-		fakeQueryTarget{ids: []string{"2"}},
+		fakeQuerySource{denseIDs: []string{"1"}},
+		fakeQueryTarget{denseIDs: []string{"2"}},
 		[]map[string]any{{"id": "1", "dense": []float32{0.1, 0.2}}},
 		config.MappingConfig{
 			Vectors: map[string]config.VectorMapping{

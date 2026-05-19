@@ -19,7 +19,7 @@ type MigrationConfig struct {
 	Validate             bool      `help:"Run validation after migration."`
 	ValidationSampleSize int       `help:"Number of migrated sample documents to fetch during validation. Set to 0 for count-only validation." default:"10"`
 	ValidationReport     string    `help:"Write post-migration validation results to a JSON report file. Implies validation."`
-	QueryOverlap         bool      `help:"Compare source and LambdaDB dense-vector query results for validation samples."`
+	QueryOverlap         bool      `help:"Compare source and LambdaDB vector query results for validation samples."`
 	QueryOverlapLimit    int       `help:"Nearest-neighbor result size for query overlap validation." default:"5"`
 	QueryOverlapMinRatio float64   `help:"Minimum average query overlap ratio required. Set to 0 to report without failing." default:"0"`
 	CheckpointPath       string    `help:"Checkpoint directory. Defaults to .lambdadb-migration/checkpoints."`
