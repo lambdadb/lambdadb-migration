@@ -56,129 +56,200 @@ func TestPineconeToRealLambdaDBSmoke(t *testing.T) {
 	)
 
 	suffix := time.Now().UnixNano() % 1_000_000_000
-	indexName := fmt.Sprintf("ldb-mig-%d", suffix)
-	targetCollection := fmt.Sprintf("mpc_%d", suffix)
 	namespace := os.Getenv("LAMBDADB_MIGRATION_PINECONE_NAMESPACE")
 
-	if err := deletePineconeIndexIfExists(ctx, pineconeClient, indexName); err != nil {
-		t.Fatalf("delete pre-existing Pinecone index: %v", err)
-	}
-	if err := deleteLambdaDBCollectionIfExists(ctx, lambdaClient, targetCollection); err != nil {
-		t.Fatalf("delete pre-existing LambdaDB collection: %v", err)
-	}
-	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cleanupCancel()
-		if err := deletePineconeIndexIfExists(cleanupCtx, pineconeClient, indexName); err != nil {
-			t.Logf("delete Pinecone index %q: %v", indexName, err)
-		}
-		if err := deleteLambdaDBCollectionIfExists(cleanupCtx, lambdaClient, targetCollection); err != nil {
-			t.Logf("delete LambdaDB collection %q: %v", targetCollection, err)
-		}
-	})
-
-	index := createPineconeIndex(t, ctx, pineconeClient, indexName, cloud, region)
-	indexConn, err := pineconeClient.Index(pineconeapi.NewIndexConnParams{
-		Host:      index.Host,
-		Namespace: namespace,
-	})
-	if err != nil {
-		t.Fatalf("connect Pinecone index: %v", err)
-	}
-	defer indexConn.Close()
-
-	metadata1, err := pineconeapi.NewMetadata(map[string]any{
-		"title":        "Pinecone document 1",
-		"metadata.url": "https://example.com/pinecone-1",
-		"rank":         float64(1),
-	})
-	if err != nil {
-		t.Fatalf("create Pinecone metadata: %v", err)
-	}
-	metadata2, err := pineconeapi.NewMetadata(map[string]any{
-		"title":        "Pinecone document 2",
-		"metadata.url": "https://example.com/pinecone-2",
-		"rank":         float64(2),
-	})
-	if err != nil {
-		t.Fatalf("create Pinecone metadata: %v", err)
-	}
-	values1 := []float32{0.1, 0.2, 0.3}
-	values2 := []float32{0.2, 0.1, 0.4}
-	upserted, err := indexConn.UpsertVectors(ctx, []*pineconeapi.Vector{
-		{Id: "pc-1", Values: &values1, Metadata: metadata1},
-		{Id: "pc-2", Values: &values2, Metadata: metadata2},
-	})
-	if err != nil {
-		t.Fatalf("upsert Pinecone vectors: %v", err)
-	}
-	if upserted != 2 {
-		t.Fatalf("upserted %d Pinecone vectors, want 2", upserted)
-	}
-	if err := waitForPineconeVectorCount(ctx, indexConn, 2); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := migrationcmd.MigratePineconeCmd{
-		Pinecone: config.PineconeConfig{
-			APIKey:    pineconeAPIKey,
-			Index:     indexName,
-			Namespace: namespace,
+	tests := []struct {
+		name      string
+		slug      string
+		indexSpec pineconeSmokeIndexSpec
+		vectors   []*pineconeapi.Vector
+		assertDoc func(map[string]any) error
+	}{
+		{
+			name: "dense",
+			slug: "dns",
+			indexSpec: pineconeSmokeIndexSpec{
+				Metric:     pineconeapi.Cosine,
+				VectorType: "dense",
+				Dimension:  int32(3),
+			},
+			vectors: pineconeDenseSmokeVectors(t),
+			assertDoc: func(doc map[string]any) error {
+				if err := requireLambdaDBDocField(doc, "dense"); err != nil {
+					return err
+				}
+				if doc["metadata_url"] != "https://example.com/pinecone-1" {
+					return fmt.Errorf("doc = %#v, want normalized metadata_url", doc)
+				}
+				return nil
+			},
 		},
-		LambdaDB: config.LambdaDBConfig{
-			BaseURL:     baseURL,
-			ProjectName: projectName,
-			APIKey:      lambdaAPIKey,
-			Collection:  targetCollection,
-		},
-		Migration: config.MigrationConfig{
-			BatchSize:            2,
-			MaxBatchBytes:        6_000_000,
-			WriteMode:            config.WriteModeUpsert,
-			Restart:              true,
-			CreateCollection:     boolPtr(true),
-			Validate:             true,
-			ValidationSampleSize: 2,
-			QueryOverlap:         true,
-			QueryOverlapLimit:    2,
-			CheckpointPath:       t.TempDir(),
-			RetryMaxAttempts:     5,
-			RetryInitialDelayMS:  500,
-			RetryMaxDelayMS:      5_000,
+		{
+			name: "sparse",
+			slug: "spr",
+			indexSpec: pineconeSmokeIndexSpec{
+				Metric:     pineconeapi.Dotproduct,
+				VectorType: "sparse",
+			},
+			vectors: pineconeSparseSmokeVectors(t),
+			assertDoc: func(doc map[string]any) error {
+				if err := requireLambdaDBDocField(doc, "sparse"); err != nil {
+					return err
+				}
+				if doc["metadata_url"] != "https://example.com/pinecone-1" {
+					return fmt.Errorf("doc = %#v, want normalized metadata_url", doc)
+				}
+				return nil
+			},
 		},
 	}
-	if err := cmd.Run(&migrationcmd.Globals{}); err != nil {
-		t.Fatalf("migration Run() error = %v", err)
-	}
 
-	if err := waitForLambdaDBDocs(ctx, lambdaClient, targetCollection, []string{"pc-1", "pc-2"}, func(doc map[string]any) error {
-		if err := requireLambdaDBDocField(doc, "dense"); err != nil {
-			return err
-		}
-		if doc["metadata_url"] != "https://example.com/pinecone-1" {
-			return fmt.Errorf("doc = %#v, want normalized metadata_url", doc)
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			indexName := fmt.Sprintf("ldb-mig-%s-%d", tt.slug, suffix)
+			targetCollection := fmt.Sprintf("mpc_%s_%d", tt.slug, suffix)
+
+			if err := deletePineconeIndexIfExists(ctx, pineconeClient, indexName); err != nil {
+				t.Fatalf("delete pre-existing Pinecone index: %v", err)
+			}
+			if err := deleteLambdaDBCollectionIfExists(ctx, lambdaClient, targetCollection); err != nil {
+				t.Fatalf("delete pre-existing LambdaDB collection: %v", err)
+			}
+			t.Cleanup(func() {
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer cleanupCancel()
+				if err := deletePineconeIndexIfExists(cleanupCtx, pineconeClient, indexName); err != nil {
+					t.Logf("delete Pinecone index %q: %v", indexName, err)
+				}
+				if err := deleteLambdaDBCollectionIfExists(cleanupCtx, lambdaClient, targetCollection); err != nil {
+					t.Logf("delete LambdaDB collection %q: %v", targetCollection, err)
+				}
+			})
+
+			index := createPineconeIndex(t, ctx, pineconeClient, indexName, cloud, region, tt.indexSpec)
+			indexConn, err := pineconeClient.Index(pineconeapi.NewIndexConnParams{
+				Host:      index.Host,
+				Namespace: namespace,
+			})
+			if err != nil {
+				t.Fatalf("connect Pinecone index: %v", err)
+			}
+			defer indexConn.Close()
+
+			upserted, err := indexConn.UpsertVectors(ctx, tt.vectors)
+			if err != nil {
+				t.Fatalf("upsert Pinecone vectors: %v", err)
+			}
+			if upserted != 2 {
+				t.Fatalf("upserted %d Pinecone vectors, want 2", upserted)
+			}
+			if err := waitForPineconeVectorCount(ctx, indexConn, 2); err != nil {
+				t.Fatal(err)
+			}
+
+			cmd := migrationcmd.MigratePineconeCmd{
+				Pinecone: config.PineconeConfig{
+					APIKey:    pineconeAPIKey,
+					Index:     indexName,
+					Namespace: namespace,
+				},
+				LambdaDB: config.LambdaDBConfig{
+					BaseURL:     baseURL,
+					ProjectName: projectName,
+					APIKey:      lambdaAPIKey,
+					Collection:  targetCollection,
+				},
+				Migration: config.MigrationConfig{
+					BatchSize:            2,
+					MaxBatchBytes:        6_000_000,
+					WriteMode:            config.WriteModeUpsert,
+					Restart:              true,
+					CreateCollection:     boolPtr(true),
+					Validate:             true,
+					ValidationSampleSize: 2,
+					QueryOverlap:         true,
+					QueryOverlapLimit:    2,
+					CheckpointPath:       t.TempDir(),
+					RetryMaxAttempts:     5,
+					RetryInitialDelayMS:  500,
+					RetryMaxDelayMS:      5_000,
+				},
+			}
+			if err := cmd.Run(&migrationcmd.Globals{}); err != nil {
+				t.Fatalf("migration Run() error = %v", err)
+			}
+
+			if err := waitForLambdaDBDocs(ctx, lambdaClient, targetCollection, []string{"pc-1", "pc-2"}, tt.assertDoc); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
-func createPineconeIndex(t *testing.T, ctx context.Context, client *pineconeapi.Client, name, cloud, region string) *pineconeapi.Index {
+type pineconeSmokeIndexSpec struct {
+	Metric     pineconeapi.IndexMetric
+	VectorType string
+	Dimension  int32
+}
+
+func pineconeDenseSmokeVectors(t *testing.T) []*pineconeapi.Vector {
 	t.Helper()
-	dimension := int32(3)
-	metric := pineconeapi.Cosine
-	vectorType := "dense"
+	metadata1 := pineconeSmokeMetadata(t, "Pinecone document 1", "https://example.com/pinecone-1", 1)
+	metadata2 := pineconeSmokeMetadata(t, "Pinecone document 2", "https://example.com/pinecone-2", 2)
+	values1 := []float32{0.1, 0.2, 0.3}
+	values2 := []float32{0.2, 0.1, 0.4}
+	return []*pineconeapi.Vector{
+		{Id: "pc-1", Values: &values1, Metadata: metadata1},
+		{Id: "pc-2", Values: &values2, Metadata: metadata2},
+	}
+}
+
+func pineconeSparseSmokeVectors(t *testing.T) []*pineconeapi.Vector {
+	t.Helper()
+	metadata1 := pineconeSmokeMetadata(t, "Pinecone sparse document 1", "https://example.com/pinecone-1", 1)
+	metadata2 := pineconeSmokeMetadata(t, "Pinecone sparse document 2", "https://example.com/pinecone-2", 2)
+	return []*pineconeapi.Vector{
+		{
+			Id:           "pc-1",
+			SparseValues: &pineconeapi.SparseValues{Indices: []uint32{3, 9}, Values: []float32{0.7, 0.2}},
+			Metadata:     metadata1,
+		},
+		{
+			Id:           "pc-2",
+			SparseValues: &pineconeapi.SparseValues{Indices: []uint32{1, 8}, Values: []float32{0.4, 0.9}},
+			Metadata:     metadata2,
+		},
+	}
+}
+
+func pineconeSmokeMetadata(t *testing.T, title, url string, rank float64) *pineconeapi.Metadata {
+	t.Helper()
+	metadata, err := pineconeapi.NewMetadata(map[string]any{
+		"title":        title,
+		"metadata.url": url,
+		"rank":         rank,
+	})
+	if err != nil {
+		t.Fatalf("create Pinecone metadata: %v", err)
+	}
+	return metadata
+}
+
+func createPineconeIndex(t *testing.T, ctx context.Context, client *pineconeapi.Client, name, cloud, region string, spec pineconeSmokeIndexSpec) *pineconeapi.Index {
+	t.Helper()
 	deletionProtection := pineconeapi.DeletionProtectionDisabled
-	index, err := client.CreateServerlessIndex(ctx, &pineconeapi.CreateServerlessIndexRequest{
+	req := &pineconeapi.CreateServerlessIndexRequest{
 		Name:               name,
 		Cloud:              pineconeapi.Cloud(cloud),
 		Region:             region,
-		Metric:             &metric,
-		Dimension:          &dimension,
-		VectorType:         &vectorType,
+		Metric:             &spec.Metric,
+		VectorType:         &spec.VectorType,
 		DeletionProtection: &deletionProtection,
-	})
+	}
+	if spec.Dimension > 0 {
+		req.Dimension = &spec.Dimension
+	}
+	index, err := client.CreateServerlessIndex(ctx, req)
 	if err != nil {
 		t.Fatalf("create Pinecone index: %v", err)
 	}

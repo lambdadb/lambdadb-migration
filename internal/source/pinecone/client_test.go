@@ -61,3 +61,16 @@ func TestCursorToToken(t *testing.T) {
 		t.Fatalf("token = %#v, want nil", token)
 	}
 }
+
+func TestSparseMapToValuesSortsIndices(t *testing.T) {
+	got, err := sparseMapToValues(map[string]float32{"8": 0.9, "4": 0.7})
+	if err != nil {
+		t.Fatalf("sparseMapToValues() error = %v", err)
+	}
+	if !reflect.DeepEqual(got.Indices, []uint32{4, 8}) {
+		t.Fatalf("indices = %#v, want sorted indices", got.Indices)
+	}
+	if !reflect.DeepEqual(got.Values, []float32{0.7, 0.9}) {
+		t.Fatalf("values = %#v, want values sorted with indices", got.Values)
+	}
+}

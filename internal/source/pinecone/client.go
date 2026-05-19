@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 
 	pineconeapi "github.com/pinecone-io/go-pinecone/v5/pinecone"
@@ -141,6 +142,39 @@ func (s *Source) SearchDense(ctx context.Context, vectorName string, vector []fl
 	return ids, nil
 }
 
+func (s *Source) SearchSparse(ctx context.Context, vectorName string, vector map[string]float32, limit int) ([]string, error) {
+	if vectorName != "" && vectorName != "sparse" {
+		return nil, fmt.Errorf("pinecone source has a single sparse vector field, got %q", vectorName)
+	}
+	if limit < 1 {
+		return nil, fmt.Errorf("search limit must be greater than 0")
+	}
+	sparse, err := sparseMapToValues(vector)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.ensureIndex(ctx); err != nil {
+		return nil, err
+	}
+	resp, err := s.conn.QueryByVectorValues(ctx, &pineconeapi.QueryByVectorValuesRequest{
+		TopK:            uint32(limit),
+		IncludeValues:   false,
+		IncludeMetadata: false,
+		SparseValues:    sparse,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("query pinecone sparse vectors: %w", err)
+	}
+	ids := make([]string, 0, len(resp.Matches))
+	for _, match := range resp.Matches {
+		if match == nil || match.Vector == nil {
+			continue
+		}
+		ids = append(ids, match.Vector.Id)
+	}
+	return ids, nil
+}
+
 func (s *Source) ensureIndex(ctx context.Context) error {
 	if s.conn != nil {
 		return nil
@@ -229,4 +263,31 @@ func sparseToMap(sparse *pineconeapi.SparseValues) map[string]float32 {
 		out[strconv.FormatUint(uint64(index), 10)] = sparse.Values[i]
 	}
 	return out
+}
+
+func sparseMapToValues(vector map[string]float32) (*pineconeapi.SparseValues, error) {
+	if len(vector) == 0 {
+		return nil, fmt.Errorf("sparse search vector must not be empty")
+	}
+	keys := make([]uint64, 0, len(vector))
+	for key := range vector {
+		index, err := strconv.ParseUint(key, 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf("parse sparse vector index %q: %w", key, err)
+		}
+		keys = append(keys, index)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return keys[i] < keys[j]
+	})
+	out := &pineconeapi.SparseValues{
+		Indices: make([]uint32, 0, len(keys)),
+		Values:  make([]float32, 0, len(keys)),
+	}
+	for _, key := range keys {
+		keyString := strconv.FormatUint(key, 10)
+		out.Indices = append(out.Indices, uint32(key))
+		out.Values = append(out.Values, vector[keyString])
+	}
+	return out, nil
 }

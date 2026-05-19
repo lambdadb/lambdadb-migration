@@ -179,7 +179,7 @@ Generated inventory mappings set `target.createCollection: true` by default, so 
 
 `--migration.validation-report` writes a JSON report with pass/fail status, source and accepted counts, LambdaDB `numDocs`, sampled document IDs, compared sample count, query overlap results, and validation errors. Setting it also enables validation.
 
-`--migration.query-overlap` adds dense-vector query overlap checks for validation samples. By default it reports overlap without failing; set `--migration.query-overlap-min-ratio` above `0` to require a minimum average overlap.
+`--migration.query-overlap` adds dense and sparse vector query overlap checks for validation samples when those vector mappings are present. By default it reports overlap without failing; set `--migration.query-overlap-min-ratio` above `0` to require a minimum average overlap.
 
 ## Uninstall
 
@@ -332,7 +332,7 @@ set +a
 go test ./integration_tests -run TestPineconeToRealLambdaDBSmoke -count=1 -v
 ```
 
-The Pinecone smoke test creates a disposable Pinecone Serverless index, upserts fixture vectors, migrates them into a temporary LambdaDB collection, verifies fetched documents, and deletes both resources in cleanup.
+The Pinecone smoke test creates disposable dense and sparse Pinecone Serverless indexes, upserts fixture vectors, migrates them into temporary LambdaDB collections, verifies fetched documents, checks query overlap, and deletes all resources in cleanup.
 
 The larger fixture defaults to 64 records. Override it with:
 

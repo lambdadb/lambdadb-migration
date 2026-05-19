@@ -247,7 +247,7 @@ Important CLI flags:
 - fetches up to `--migration.validation-sample-size` migrated sample documents with strongly consistent reads
 - compares sampled fields, including dense vectors and sparse vectors
 - writes a structured JSON report when `--migration.validation-report` is set; the report includes status, counts, sampled IDs, compared count, and errors
-- optionally compares source and LambdaDB dense-vector query results for validation samples when `--migration.query-overlap` is set
+- optionally compares source and LambdaDB dense/sparse vector query results for validation samples when `--migration.query-overlap` is set
 
 Note: real LambdaDB smoke tests observed `numDocs=0` even after accepted writes, so `numDocs` is currently reported but not treated as the primary pass/fail signal. Sample fetch/field comparison is the stronger validation check.
 
@@ -442,15 +442,13 @@ PASS
 Latest Pinecone-to-real-LambdaDB smoke result:
 
 ```text
-LAMBDADB_MIGRATION_RUN_PINECONE_REAL_E2E=1 \
-PINECONE_API_KEY="$PINECONE_API_KEY" \
-LAMBDADB_BASE_URL="$LAMBDADB_BASE_URL" \
-LAMBDADB_PROJECT_NAME="$LAMBDADB_PROJECT_NAME" \
-LAMBDADB_PROJECT_API_KEY="$LAMBDADB_PROJECT_API_KEY" \
+set -a
+source .env.local
+set +a
 go test ./integration_tests -run TestPineconeToRealLambdaDBSmoke -count=1 -v
 PASS
-validation fetched and compared 2 sample documents
-validation query overlap average=1.000 compared=2 limit=2
+--- PASS: TestPineconeToRealLambdaDBSmoke/dense
+--- PASS: TestPineconeToRealLambdaDBSmoke/sparse
 ```
 
 Notes from the real E2E:
@@ -589,7 +587,7 @@ This gated integration test passed against the local Docker Qdrant fixture in th
 
 There is also a real Qdrant-to-LambdaDB smoke suite gated by `LAMBDADB_MIGRATION_RUN_QDRANT_REAL_E2E=1`.
 
-There is a Pinecone-to-real-LambdaDB smoke suite gated by `LAMBDADB_MIGRATION_RUN_PINECONE_REAL_E2E=1`. It creates a disposable Pinecone Serverless index using `PINECONE_API_KEY` and optional `LAMBDADB_MIGRATION_PINECONE_CLOUD` / `LAMBDADB_MIGRATION_PINECONE_REGION` overrides, defaulting to `aws` / `us-east-1`, upserts fixture vectors, migrates into a temporary LambdaDB collection, verifies fetched documents, and deletes both resources in cleanup.
+There is a Pinecone-to-real-LambdaDB smoke suite gated by `LAMBDADB_MIGRATION_RUN_PINECONE_REAL_E2E=1`. It creates disposable dense and sparse Pinecone Serverless indexes using `PINECONE_API_KEY` and optional `LAMBDADB_MIGRATION_PINECONE_CLOUD` / `LAMBDADB_MIGRATION_PINECONE_REGION` overrides, defaulting to `aws` / `us-east-1`, upserts fixture vectors, migrates into temporary LambdaDB collections, verifies fetched documents, checks query overlap, and deletes all resources in cleanup.
 
 Remaining integration risk: controlled failure/retry behavior is still mock-only. The heavier live bulk run has been tested at 250 documents; treat substantially larger customer-scale volumes as optional future confidence testing when API cost/time is acceptable.
 
@@ -605,7 +603,7 @@ Completed for current publish scope:
 
 Recommended next work:
 
-1. Review and commit the sparse-vector query overlap validation changes.
+1. Review and commit the Pinecone sparse query overlap/live-smoke changes.
 2. If query validation remains the priority, add explicit representative fixtures/config for hybrid and filter-heavy overlap.
 3. Continue source coverage after Pinecone, likely Chroma or Weaviate depending on customer pull.
 
