@@ -156,6 +156,8 @@ lambdadb-migration pinecone \
 
 The Pinecone connector uses Pinecone's vector listing API, which is available for Serverless indexes. Use `--pinecone.list-prefix` to migrate only IDs with a specific prefix.
 
+Pinecone operations are namespace-scoped. If `--pinecone.namespace` is omitted, the connector reads Pinecone's default namespace only; it does not iterate over every namespace in the index. For multi-namespace indexes, run one migration per namespace or use separate LambdaDB collections. Pinecone can store the same vector ID in different namespaces, so merging multiple namespaces into one LambdaDB collection requires an explicit ID strategy such as prefixing IDs with the namespace.
+
 ## Common Options
 
 `inventory qdrant` and `inventory pinecone` write YAML for `.yaml`/`.yml` outputs and JSON otherwise. `--mapping-file` accepts either JSON or YAML, as a direct mapping object or as the wrapped output produced by an inventory command.

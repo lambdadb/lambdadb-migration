@@ -305,6 +305,7 @@ Implemented in `internal/source/pinecone`:
 - `Inventory`
 - `Read`
 - `SearchDense`
+- `SearchSparse`
 
 Inventory currently extracts:
 
@@ -322,6 +323,13 @@ Read currently:
 - converts dense values to the unnamed dense vector field
 - converts sparse values to source sparse vector field `sparse`
 - stores Pinecone pagination tokens as checkpoint cursors
+
+Namespace behavior:
+
+- Pinecone vector operations are scoped to a single namespace.
+- When `--pinecone.namespace` is omitted, the connector reads Pinecone's default namespace only; it does not scan every namespace in the index.
+- Pinecone can store the same vector ID in different namespaces, so any future multi-namespace migration into one LambdaDB collection needs an explicit collision strategy, for example prefixing IDs with the namespace.
+- Current safe usage is to run one migration per namespace, typically into separate LambdaDB collections unless the user has planned a stable merged-ID scheme.
 
 ### LambdaDB Target
 
@@ -596,14 +604,14 @@ Remaining integration risk: controlled failure/retry behavior is still mock-only
 Completed for current publish scope:
 
 1. Release workflows have run successfully after remote configuration.
-2. Release `v0.1.3` is published and marked latest.
-3. Installer full download/install/help/uninstall has been verified against `v0.1.3`.
+2. Release `v0.1.4` is published and marked latest.
+3. Installer full download/install/help/uninstall has been verified against `v0.1.3`; repeat against `v0.1.4` if release smoke verification is needed.
 4. Larger live bulk coverage has reached 250 documents; larger customer-scale runs are optional rather than a near-term blocker.
-5. Pinecone Serverless MVP and disposable-index live smoke have passed.
+5. Pinecone Serverless MVP and disposable dense/sparse live smoke have passed.
 
 Recommended next work:
 
-1. Review and commit the Pinecone sparse query overlap/live-smoke changes.
+1. Add an explicit Pinecone multi-namespace migration design before implementing it. Decide whether to support namespace enumeration, namespace-to-collection mapping, and/or an ID rewrite strategy such as `{namespace}:{id}` for safe merges.
 2. If query validation remains the priority, add explicit representative fixtures/config for hybrid and filter-heavy overlap.
 3. Continue source coverage after Pinecone, likely Chroma or Weaviate depending on customer pull.
 
