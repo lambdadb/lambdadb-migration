@@ -33,10 +33,6 @@ const (
 )
 
 func (c *MigrateQdrantCmd) Run(globals *Globals) error {
-	if err := c.Migration.ValidateConfig(); err != nil {
-		return err
-	}
-
 	ctx := context.Background()
 	src, err := qdrantsource.New(c.Qdrant)
 	if err != nil {
@@ -44,12 +40,36 @@ func (c *MigrateQdrantCmd) Run(globals *Globals) error {
 	}
 	defer src.Close()
 
-	inv, err := src.Inventory(ctx)
+	return runMigration(ctx, migrationRunConfig{
+		SourceKind:       "qdrant",
+		SourceCollection: c.Qdrant.Collection,
+		Source:           src,
+		LambdaDB:         c.LambdaDB,
+		Migration:        c.Migration,
+		MappingFile:      c.MappingFile,
+	})
+}
+
+type migrationRunConfig struct {
+	SourceKind       string
+	SourceCollection string
+	Source           source.Source
+	LambdaDB         config.LambdaDBConfig
+	Migration        config.MigrationConfig
+	MappingFile      string
+}
+
+func runMigration(ctx context.Context, c migrationRunConfig) error {
+	if err := c.Migration.ValidateConfig(); err != nil {
+		return err
+	}
+
+	inv, err := c.Source.Inventory(ctx)
 	if err != nil {
 		return err
 	}
 
-	mapping, err := c.loadMapping(inv)
+	mapping, err := loadMapping(c.MappingFile, inv, c.LambdaDB.Collection)
 	if err != nil {
 		return err
 	}
@@ -72,7 +92,7 @@ func (c *MigrateQdrantCmd) Run(globals *Globals) error {
 	maxBatchBytes := targetlambdadb.EffectiveMaxBatchBytes(c.Migration.MaxBatchBytes, c.Migration.WriteMode)
 
 	store := checkpoint.NewFileStore(checkpointRoot(c.Migration.CheckpointPath))
-	key := checkpointKey(c.Qdrant.Collection, c.LambdaDB.ProjectName, c.LambdaDB.Collection)
+	key := sourceCheckpointKey(c.SourceKind, c.SourceCollection, c.LambdaDB.ProjectName, c.LambdaDB.Collection)
 	var cursorValue any
 	var accepted uint64
 	shouldValidate := c.Migration.Validate || c.Migration.ValidationReport != "" || c.Migration.QueryOverlap
@@ -93,7 +113,7 @@ func (c *MigrateQdrantCmd) Run(globals *Globals) error {
 	progress := newProgressTracker(inv.RecordCount, accepted, startedAt)
 
 	for {
-		batch, err := src.Read(ctx, source.Cursor{Value: cursorValue}, c.Migration.BatchSize)
+		batch, err := c.Source.Read(ctx, source.Cursor{Value: cursorValue}, c.Migration.BatchSize)
 		if err != nil {
 			return err
 		}
@@ -127,8 +147,8 @@ func (c *MigrateQdrantCmd) Run(globals *Globals) error {
 			cursorValue = batch.NextCursor.Value
 		}
 		if err := store.Save(ctx, key, checkpoint.Checkpoint{
-			SourceKind:       "qdrant",
-			SourceCollection: c.Qdrant.Collection,
+			SourceKind:       c.SourceKind,
+			SourceCollection: c.SourceCollection,
 			TargetCollection: c.LambdaDB.Collection,
 			Cursor:           cursorValue,
 			AcceptedRecords:  accepted,
@@ -150,12 +170,20 @@ func (c *MigrateQdrantCmd) Run(globals *Globals) error {
 	if shouldValidate {
 		report, validationErr := validateMigration(ctx, target, inv.RecordCount, accepted, samples, mapping)
 		if c.Migration.QueryOverlap {
-			overlapReport, err := validateQueryOverlap(ctx, src, target, samples, mapping, c.Migration.QueryOverlapLimit, c.Migration.QueryOverlapMinRatio)
-			report.QueryOverlap = &overlapReport
-			if err != nil {
+			overlapSource, ok := c.Source.(queryOverlapSource)
+			if !ok {
+				err := fmt.Errorf("%s source does not support dense-vector query overlap validation", c.SourceKind)
 				report.Status = "fail"
 				report.Errors = append(report.Errors, err.Error())
 				validationErr = errors.Join(validationErr, err)
+			} else {
+				overlapReport, err := validateQueryOverlap(ctx, overlapSource, target, samples, mapping, c.Migration.QueryOverlapLimit, c.Migration.QueryOverlapMinRatio)
+				report.QueryOverlap = &overlapReport
+				if err != nil {
+					report.Status = "fail"
+					report.Errors = append(report.Errors, err.Error())
+					validationErr = errors.Join(validationErr, err)
+				}
 			}
 		}
 		if c.Migration.ValidationReport != "" {
@@ -610,10 +638,14 @@ func cloneDocument(doc map[string]any) map[string]any {
 }
 
 func (c *MigrateQdrantCmd) loadMapping(inv *source.Inventory) (config.MappingConfig, error) {
-	if c.MappingFile == "" {
-		return config.MappingFromInventory(inv, c.LambdaDB.Collection), nil
+	return loadMapping(c.MappingFile, inv, c.LambdaDB.Collection)
+}
+
+func loadMapping(path string, inv *source.Inventory, targetCollection string) (config.MappingConfig, error) {
+	if path == "" {
+		return config.MappingFromInventory(inv, targetCollection), nil
 	}
-	data, err := os.ReadFile(c.MappingFile)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return config.MappingConfig{}, fmt.Errorf("read mapping file: %w", err)
 	}
@@ -644,7 +676,11 @@ func checkpointRoot(path string) string {
 }
 
 func checkpointKey(sourceCollection, targetProject, targetCollection string) string {
-	parts := []string{"qdrant", sourceCollection, targetProject, targetCollection}
+	return sourceCheckpointKey("qdrant", sourceCollection, targetProject, targetCollection)
+}
+
+func sourceCheckpointKey(sourceKind, sourceCollection, targetProject, targetCollection string) string {
+	parts := []string{sourceKind, sourceCollection, targetProject, targetCollection}
 	for i, part := range parts {
 		parts[i] = strings.NewReplacer("/", "_", "\\", "_", ":", "_").Replace(part)
 	}

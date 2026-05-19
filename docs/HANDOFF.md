@@ -31,9 +31,10 @@ This is a migration-to-LambdaDB CLI.
 
 - Sources: eventually support the same source set as Qdrant's migration project.
 - Target: LambdaDB only.
-- First source implementation: Qdrant.
+- Source implementations: Qdrant is hardened/published; Pinecone Serverless MVP is now implemented.
 - Official LambdaDB Go SDK: `github.com/lambdadb/go-lambdadb`.
 - Qdrant source client: `github.com/qdrant/go-client/qdrant`.
+- Pinecone source client: `github.com/pinecone-io/go-pinecone/v5/pinecone`.
 
 Supported source roadmap from the design:
 
@@ -62,6 +63,9 @@ The architecture intentionally does not fork Qdrant's repository as-is. It uses 
 - Qdrant sparse vectors are converted from `indices`/`values` arrays into LambdaDB sparse vector objects with string keys.
 - Qdrant Manhattan distance is detected but rejected for LambdaDB collection creation because there is no direct LambdaDB similarity equivalent.
 - Qdrant multi-vectors are detected and treated as requiring custom migration handling.
+- Pinecone Serverless migration uses Pinecone's vector listing API, then fetches vector values and metadata by ID.
+- Pinecone dense vectors map to LambdaDB `dense`; Pinecone sparse values map to LambdaDB sparse vector field `sparse`.
+- Pinecone metadata index settings are not currently introspected, so generated mappings store metadata payloads without generated LambdaDB index configs.
 - Local file checkpoints are the default. The tool does not create a LambdaDB checkpoint collection.
 - Bulk upsert is the default LambdaDB write mode, with regular upsert available via flag.
 
@@ -79,6 +83,7 @@ The architecture intentionally does not fork Qdrant's repository as-is. It uses 
 ├── README.md
 ├── cmd/
 │   ├── inventory.go
+│   ├── migrate_from_pinecone.go
 │   ├── migrate_from_qdrant.go
 │   ├── migrate_from_qdrant_test.go
 │   ├── output.go
@@ -94,6 +99,7 @@ The architecture intentionally does not fork Qdrant's repository as-is. It uses 
 ├── integration_tests/
 │   ├── compose/
 │   │   └── qdrant.yaml
+│   ├── pinecone_to_lambdadb_real_test.go
 │   ├── qdrant_to_lambdadb_real_test.go
 │   └── qdrant_to_lambdadb_test.go
 ├── internal/
@@ -112,11 +118,17 @@ The architecture intentionally does not fork Qdrant's repository as-is. It uses 
 │   │   ├── mapping_validation_test.go
 │   │   ├── migration.go
 │   │   ├── migration_test.go
+│   │   ├── pinecone.go
 │   │   ├── source.go
 │   │   └── target.go
 │   ├── pipeline/
 │   │   └── runner.go
 │   ├── source/
+│   │   ├── pinecone/
+│   │   │   ├── client.go
+│   │   │   ├── client_test.go
+│   │   │   ├── inventory.go
+│   │   │   └── inventory_test.go
 │   │   ├── qdrant/
 │   │   │   ├── client.go
 │   │   │   ├── cursor_test.go
@@ -147,19 +159,24 @@ The CLI builds and exposes:
 ```bash
 go run . --help
 go run . inventory qdrant --help
+go run . inventory pinecone --help
 go run . qdrant --help
+go run . pinecone --help
 ```
 
 Commands:
 
 - `inventory qdrant`: connects to Qdrant, inspects collection metadata/count, and emits JSON/YAML containing inventory plus generated LambdaDB mapping.
+- `inventory pinecone`: connects to Pinecone, inspects Serverless index metadata/count, and emits JSON/YAML containing inventory plus generated LambdaDB mapping.
 - `qdrant`: connects to Qdrant and LambdaDB, optionally creates LambdaDB collection, scrolls Qdrant points, transforms to LambdaDB documents, writes to LambdaDB, and saves a local checkpoint.
+- `pinecone`: connects to Pinecone and LambdaDB, optionally creates LambdaDB collection, lists/fetches Pinecone vectors, transforms to LambdaDB documents, writes to LambdaDB, and saves a local checkpoint.
 
 ### Config
 
 Implemented in `internal/config`:
 
 - `QdrantConfig`
+- `PineconeConfig`
 - `LambdaDBConfig`
 - `MigrationConfig`
 - `MappingConfig`
@@ -193,6 +210,11 @@ Important CLI flags:
 --qdrant.api-key
 --qdrant.collection
 --qdrant.max-message-size
+--pinecone.api-key
+--pinecone.host
+--pinecone.index
+--pinecone.namespace
+--pinecone.list-prefix
 --lambdadb.base-url
 --lambdadb.project-name
 --lambdadb.api-key
@@ -225,7 +247,7 @@ Important CLI flags:
 - fetches up to `--migration.validation-sample-size` migrated sample documents with strongly consistent reads
 - compares sampled fields, including dense vectors and sparse vectors
 - writes a structured JSON report when `--migration.validation-report` is set; the report includes status, counts, sampled IDs, compared count, and errors
-- optionally compares Qdrant and LambdaDB dense-vector query results for validation samples when `--migration.query-overlap` is set
+- optionally compares source and LambdaDB dense-vector query results for validation samples when `--migration.query-overlap` is set
 
 Note: real LambdaDB smoke tests observed `numDocs=0` even after accepted writes, so `numDocs` is currently reported but not treated as the primary pass/fail signal. Sample fetch/field comparison is the stronger validation check.
 
@@ -271,6 +293,35 @@ Record conversion currently handles:
 - sparse vectors
 - multi-vectors as `[][]float32` in neutral records, though later transform rejects them by default
 - legacy Qdrant vector outputs that encode dense, sparse, and multi-vector values through deprecated `data` fields
+
+### Pinecone Source
+
+Implemented in `internal/source/pinecone`:
+
+- `New(config.PineconeConfig)`
+- `Close`
+- `Name`
+- `Count`
+- `Inventory`
+- `Read`
+- `SearchDense`
+
+Inventory currently extracts:
+
+- Serverless index count for the configured namespace when available
+- dense vector dimension and similarity from `DescribeIndex`
+- sparse vector source field for sparse indexes
+- warnings for namespace/prefix-scoped migrations and integrated embedding indexes
+- warning that Pinecone metadata index settings are not currently introspected
+
+Read currently:
+
+- uses Pinecone `ListVectors`, which is available for Serverless indexes
+- fetches listed vector IDs with `FetchVectors`
+- converts Pinecone metadata to neutral payload fields
+- converts dense values to the unnamed dense vector field
+- converts sparse values to source sparse vector field `sparse`
+- stores Pinecone pagination tokens as checkpoint cursors
 
 ### LambdaDB Target
 
@@ -333,10 +384,10 @@ Default checkpoint directory:
 .lambdadb-migration/checkpoints
 ```
 
-Checkpoint key currently includes:
+Checkpoint keys currently include the source kind, source index/collection, target project, and target collection:
 
 ```text
-qdrant/<sourceCollection>/<targetProject>/<targetCollection>.json
+<sourceKind>/<sourceCollection>/<targetProject>/<targetCollection>.json
 ```
 
 ## Verified Commands
@@ -348,7 +399,9 @@ cd /Users/steven/Dev/lambdadb-migration
 go test ./...
 go run . --help
 go run . inventory qdrant --help
+go run . inventory pinecone --help
 go run . qdrant --help
+go run . pinecone --help
 ```
 
 Latest `go test ./...` result:
@@ -370,7 +423,7 @@ Latest gated Qdrant integration result:
 
 ```text
 docker compose -f integration_tests/compose/qdrant.yaml up -d
-LAMBDADB_MIGRATION_RUN_INTEGRATION=1 go test ./integration_tests -run TestQdrantToLambdaDBMockIntegration -count=1 -v
+LAMBDADB_MIGRATION_RUN_QDRANT_MOCK_E2E=1 go test ./integration_tests -run TestQdrantToLambdaDBMockIntegration -count=1 -v
 PASS
 ```
 
@@ -378,12 +431,26 @@ Latest real LambdaDB smoke result:
 
 ```text
 docker compose -f integration_tests/compose/qdrant.yaml up -d
-LAMBDADB_MIGRATION_RUN_REAL_E2E=1 \
+LAMBDADB_MIGRATION_RUN_QDRANT_REAL_E2E=1 \
 LAMBDADB_BASE_URL="https://aws-dev.lambdadb.ai" \
 LAMBDADB_PROJECT_NAME="steven-test" \
 LAMBDADB_PROJECT_API_KEY="$LAMBDADB_PROJECT_API_KEY" \
 go test ./integration_tests -run TestQdrantToRealLambdaDBSmoke -count=1 -v
 PASS
+```
+
+Latest Pinecone-to-real-LambdaDB smoke result:
+
+```text
+LAMBDADB_MIGRATION_RUN_PINECONE_REAL_E2E=1 \
+PINECONE_API_KEY="$PINECONE_API_KEY" \
+LAMBDADB_BASE_URL="$LAMBDADB_BASE_URL" \
+LAMBDADB_PROJECT_NAME="$LAMBDADB_PROJECT_NAME" \
+LAMBDADB_PROJECT_API_KEY="$LAMBDADB_PROJECT_API_KEY" \
+go test ./integration_tests -run TestPineconeToRealLambdaDBSmoke -count=1 -v
+PASS
+validation fetched and compared 2 sample documents
+validation query overlap average=1.000 compared=2 limit=2
 ```
 
 Notes from the real E2E:
@@ -447,7 +514,7 @@ go run . qdrant \
   --mapping-file qdrant-inventory.yaml
 ```
 
-Note: `inventory qdrant` writes YAML for `.yaml`/`.yml` outputs and JSON otherwise. `--mapping-file` accepts either JSON or YAML, as a direct `MappingConfig` object or the wrapped output produced by `inventory qdrant`.
+Note: inventory commands write YAML for `.yaml`/`.yml` outputs and JSON otherwise. `--mapping-file` accepts either JSON or YAML, as a direct `MappingConfig` object or the wrapped output produced by an inventory command.
 
 ## Known Gaps / Risks
 
@@ -463,18 +530,21 @@ A Qdrant-to-real-LambdaDB smoke suite has passed against the configured dev proj
 
 Checkpoints are retained by default. `--migration.cleanup-checkpoint` deletes the local checkpoint after a successful migration and validation. `TestQdrantToLambdaDBCheckpointCleanup` covers this through the Qdrant-to-LambdaDB mock integration path.
 
-### Retry/Backoff Is Configurable But Still Basic
+### Retry/Backoff Is Configurable And Covered For Current Scope
 
-LambdaDB writes now retry transient failures with bounded exponential backoff, configurable from CLI flags. Remaining gaps:
+LambdaDB writes now retry transient failures with bounded exponential backoff, configurable from CLI flags.
 
-- retry behavior is unit-tested and exercised against a controlled mock 503 fixture, but not against a controlled real-service failure fixture
-- collection creation/get calls still rely mostly on SDK behavior plus the existing `ACTIVE` wait loop
+- retry behavior is unit-tested and exercised against a controlled mock 503 fixture
+- collection creation/get calls rely on SDK behavior plus the existing `ACTIVE` wait loop
+- a real-service controlled 429/5xx fixture is not currently available; treat that as optional future hardening rather than a release blocker
 
 ### Validation Has Fetch-Based Report And Query Overlap
 
-`--migration.validate` now checks accepted count and compares configurable fetched sample documents. `--migration.validation-report` writes a JSON report and implies validation. `--migration.query-overlap` compares dense-vector nearest-neighbor result overlap between Qdrant and LambdaDB for validation samples. It reports overlap by default and only fails validation when `--migration.query-overlap-min-ratio` is above `0` and the average falls below that threshold. Remaining validation gaps:
+`--migration.validate` now checks accepted count and compares configurable fetched sample documents. `--migration.validation-report` writes a JSON report and implies validation. `--migration.query-overlap` compares dense-vector nearest-neighbor result overlap between the source and LambdaDB for validation samples. It reports overlap by default and only fails validation when `--migration.query-overlap-min-ratio` is above `0` and the average falls below that threshold. Remaining validation gaps:
 
 - `numDocs` is reported but not used as a pass/fail signal because real smoke tests observed it staying at 0 after successful writes and fetches
+- sparse-vector overlap is feasible because Qdrant supports sparse query vectors and LambdaDB supports `sparseVector` queries, but it is not implemented yet
+- hybrid and filter-heavy overlap are technically feasible for curated fixtures, but not generally inferable from mapping alone; they should use explicit representative query fixtures/config if implemented
 
 ### Docker And GoReleaser Snapshot Work
 
@@ -482,7 +552,7 @@ Added `Dockerfile`, `.dockerignore`, `.goreleaser.yml`, and README install/build
 
 ### Installer Added
 
-`install.sh` installs the matching GitHub Release artifact for Linux/macOS amd64/arm64. It supports `--version`, `--install-dir`, `--repo`, `--no-verify`, `--dry-run`, and `--uninstall`. It verifies `checksums.txt` by default. The script has been syntax-checked and dry-run locally, but full download/install should be tested after the first GitHub Release exists.
+`install.sh` installs the matching GitHub Release artifact for Linux/macOS amd64/arm64. It supports `--version`, `--install-dir`, `--repo`, `--no-verify`, `--dry-run`, and `--uninstall`. It verifies `checksums.txt` by default. The script has been syntax-checked, dry-run locally, and full install/help/uninstall tested against release `v0.1.3`.
 
 ### CI Added
 
@@ -490,7 +560,7 @@ Added `Dockerfile`, `.dockerignore`, `.goreleaser.yml`, and README install/build
 
 ### Release Publishing Added
 
-`.github/workflows/release.yml` publishes GoReleaser artifacts on `v*` tag pushes using `GITHUB_TOKEN`. The repository still has no remote configured locally, so the workflow has not run on GitHub yet.
+`.github/workflows/release.yml` publishes GoReleaser artifacts on `v*` tag pushes using `GITHUB_TOKEN`. The repository has `origin` configured at `https://github.com/lambdadb/lambdadb-migration.git`, and release workflows have succeeded through `v0.1.3`.
 
 ### Integration Coverage Is Better But Still Small
 
@@ -498,7 +568,7 @@ There is now a gated integration test using local Qdrant plus an in-process Lamb
 
 ```bash
 docker compose -f integration_tests/compose/qdrant.yaml up -d
-LAMBDADB_MIGRATION_RUN_INTEGRATION=1 go test ./integration_tests -run TestQdrantToLambdaDBMockIntegration -count=1
+LAMBDADB_MIGRATION_RUN_QDRANT_MOCK_E2E=1 go test ./integration_tests -run TestQdrantToLambdaDBMockIntegration -count=1
 ```
 
 Current fixtures cover:
@@ -517,17 +587,27 @@ Current fixtures cover:
 
 This gated integration test passed against the local Docker Qdrant fixture in this workspace. It also caught and fixed real Qdrant scroll responses that return vector data through deprecated `data` fields instead of the newer typed oneofs.
 
-There is also a real LambdaDB smoke suite gated by `LAMBDADB_MIGRATION_RUN_REAL_E2E=1`.
+There is also a real Qdrant-to-LambdaDB smoke suite gated by `LAMBDADB_MIGRATION_RUN_QDRANT_REAL_E2E=1`.
 
-Remaining integration risk: controlled failure/retry behavior is still mock-only, and the heavier live bulk run has been tested at 250 documents but not at substantially larger customer-scale volumes.
+There is a Pinecone-to-real-LambdaDB smoke suite gated by `LAMBDADB_MIGRATION_RUN_PINECONE_REAL_E2E=1`. It creates a disposable Pinecone Serverless index using `PINECONE_API_KEY` and optional `LAMBDADB_MIGRATION_PINECONE_CLOUD` / `LAMBDADB_MIGRATION_PINECONE_REGION` overrides, defaulting to `aws` / `us-east-1`, upserts fixture vectors, migrates into a temporary LambdaDB collection, verifies fetched documents, and deletes both resources in cleanup.
+
+Remaining integration risk: controlled failure/retry behavior is still mock-only. The heavier live bulk run has been tested at 250 documents; treat substantially larger customer-scale volumes as optional future confidence testing when API cost/time is acceptable.
 
 ## Suggested Next Work Order
 
-1. Consider adding a real-service controlled failure fixture if LambdaDB exposes a safe way to simulate 429/5xx.
-2. Run the GitHub Actions CI/release workflows after a remote is configured.
-3. Try a larger live bulk run beyond 250 documents when API cost/time is acceptable.
-4. Extend query overlap validation to sparse, hybrid, and filter-heavy queries if needed.
-5. Add more source implementations from the roadmap, starting with Pinecone or Chroma.
+Completed for current publish scope:
+
+1. Release workflows have run successfully after remote configuration.
+2. Release `v0.1.3` is published and marked latest.
+3. Installer full download/install/help/uninstall has been verified against `v0.1.3`.
+4. Larger live bulk coverage has reached 250 documents; larger customer-scale runs are optional rather than a near-term blocker.
+5. Pinecone Serverless MVP and disposable-index live smoke have passed.
+
+Recommended next work:
+
+1. Review and commit the Pinecone connector, disposable live smoke, env cleanup, and docs updates.
+2. If query validation is the priority, implement sparse-vector query overlap first. Hybrid and filter-heavy overlap should wait for explicit representative query fixtures/config.
+3. Continue source coverage after Pinecone, likely Chroma or Weaviate depending on customer pull.
 
 ## Files To Read First In The Next Session
 
@@ -550,11 +630,12 @@ From `go.mod`:
 ```text
 github.com/alecthomas/kong v1.13.0
 github.com/lambdadb/go-lambdadb v0.3.0
+github.com/pinecone-io/go-pinecone/v5 v5.4.1
 github.com/qdrant/go-client v1.17.1
 ```
 
-There are many indirect dependencies from Qdrant's gRPC/protobuf client and LambdaDB SDK.
+There are many indirect dependencies from Qdrant's gRPC/protobuf client, Pinecone's SDK, and LambdaDB SDK.
 
 ## Caveat
 
-The current migration command is intentionally a first thin path, not production-ready. It should be treated as a scaffold that can run after more validation and batch-safety work, rather than as the finished customer-facing tool.
+The Qdrant path is release-published and covered by local/mock plus real LambdaDB smoke tests. The Pinecone path is a first Serverless MVP with unit coverage and CLI/help verification; run a gated live Pinecone smoke before treating it as release-ready.

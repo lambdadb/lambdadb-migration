@@ -2,7 +2,7 @@
 
 CLI tooling for migrating vector databases and search systems into LambdaDB.
 
-The first supported source is Qdrant. LambdaDB is the only target.
+Supported sources include Qdrant and Pinecone Serverless. LambdaDB is the only target.
 
 ## Quickstart
 
@@ -24,12 +24,13 @@ Make sure the install directory is on your `PATH`, then check the CLI:
 ```bash
 lambdadb-migration --help
 lambdadb-migration qdrant --help
+lambdadb-migration pinecone --help
 ```
 
 Install a specific version:
 
 ```bash
-sh install.sh --version v0.1.1 --install-dir "$HOME/.local/bin"
+sh install.sh --version v0.1.3 --install-dir "$HOME/.local/bin"
 ```
 
 Uninstall the binary:
@@ -103,9 +104,61 @@ lambdadb-migration qdrant \
 
 Migration progress is written to stderr with accepted count, percent, batch size, rate, and elapsed time.
 
+## Pinecone To LambdaDB
+
+Set your Pinecone API key and LambdaDB connection values:
+
+```bash
+export PINECONE_API_KEY="your-pinecone-api-key"
+export LAMBDADB_BASE_URL="your-region-specific-lambdadb-base-url"
+export LAMBDADB_PROJECT_NAME="your-lambdadb-project-name"
+export LAMBDADB_PROJECT_API_KEY="your-project-api-key"
+```
+
+Generate an inventory and editable mapping from a Pinecone Serverless index:
+
+```bash
+lambdadb-migration inventory pinecone \
+  --pinecone.index articles \
+  --pinecone.namespace production \
+  --output pinecone-inventory.yaml
+```
+
+Review `pinecone-inventory.yaml`, then run a dry-run:
+
+```bash
+lambdadb-migration pinecone \
+  --pinecone.index articles \
+  --pinecone.namespace production \
+  --lambdadb.base-url "$LAMBDADB_BASE_URL" \
+  --lambdadb.project-name "$LAMBDADB_PROJECT_NAME" \
+  --lambdadb.api-key "$LAMBDADB_PROJECT_API_KEY" \
+  --lambdadb.collection articles \
+  --mapping-file pinecone-inventory.yaml \
+  --migration.dry-run
+```
+
+Run the migration with validation:
+
+```bash
+lambdadb-migration pinecone \
+  --pinecone.index articles \
+  --pinecone.namespace production \
+  --lambdadb.base-url "$LAMBDADB_BASE_URL" \
+  --lambdadb.project-name "$LAMBDADB_PROJECT_NAME" \
+  --lambdadb.api-key "$LAMBDADB_PROJECT_API_KEY" \
+  --lambdadb.collection articles \
+  --mapping-file pinecone-inventory.yaml \
+  --migration.write-mode bulk \
+  --migration.validate \
+  --migration.validation-report validation-report.json
+```
+
+The Pinecone connector uses Pinecone's vector listing API, which is available for Serverless indexes. Use `--pinecone.list-prefix` to migrate only IDs with a specific prefix.
+
 ## Common Options
 
-`inventory qdrant` writes YAML for `.yaml`/`.yml` outputs and JSON otherwise. `--mapping-file` accepts either JSON or YAML, as a direct mapping object or as the wrapped output produced by `inventory qdrant`.
+`inventory qdrant` and `inventory pinecone` write YAML for `.yaml`/`.yml` outputs and JSON otherwise. `--mapping-file` accepts either JSON or YAML, as a direct mapping object or as the wrapped output produced by an inventory command.
 
 Useful migration safety flags:
 
@@ -206,7 +259,9 @@ Run from source:
 ```bash
 go run . --help
 go run . inventory qdrant --help
+go run . inventory pinecone --help
 go run . qdrant --help
+go run . pinecone --help
 ```
 
 Build a Docker image:
@@ -233,8 +288,8 @@ goreleaser release --snapshot --clean
 Publish a GitHub release:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.3
+git push origin v0.1.3
 ```
 
 Tag pushes matching `v*` run the release workflow and publish GoReleaser artifacts to GitHub Releases.
@@ -245,7 +300,7 @@ Start local Qdrant, then run the gated integration test:
 
 ```bash
 docker compose -f integration_tests/compose/qdrant.yaml up -d
-LAMBDADB_MIGRATION_RUN_INTEGRATION=1 go test ./integration_tests -run TestQdrantToLambdaDBMockIntegration -count=1
+LAMBDADB_MIGRATION_RUN_QDRANT_MOCK_E2E=1 go test ./integration_tests -run TestQdrantToLambdaDBMockIntegration -count=1
 ```
 
 The test seeds temporary Qdrant collections and migrates them through the CLI path into an in-process LambdaDB mock server.
@@ -261,12 +316,26 @@ docker compose -f integration_tests/compose/qdrant.yaml up -d
 go test ./integration_tests -run TestQdrantToRealLambdaDBSmoke -count=1 -v
 ```
 
+Set `LAMBDADB_MIGRATION_RUN_QDRANT_REAL_E2E=1` in `.env.local` before running this real Qdrant-to-LambdaDB smoke test.
+
 Local `.env` files are ignored by git. Do not commit real API keys.
 
 The real smoke suite creates temporary LambdaDB collections, verifies migrated documents with strongly consistent fetches, and deletes the collections in cleanup. It currently covers unnamed dense upsert, named dense upsert, dense+sparse payload-index upsert, additional payload index types, unnamed dense bulk write mode, and a larger dense bulk fixture.
 
+For a controlled Pinecone-to-LambdaDB smoke test, set `LAMBDADB_MIGRATION_RUN_PINECONE_REAL_E2E=1` and `PINECONE_API_KEY` in `.env.local`. The test creates its disposable Pinecone index in `aws` / `us-east-1` by default; override that with `LAMBDADB_MIGRATION_PINECONE_CLOUD` and `LAMBDADB_MIGRATION_PINECONE_REGION` when needed. Then run:
+
+```bash
+set -a
+source .env.local
+set +a
+
+go test ./integration_tests -run TestPineconeToRealLambdaDBSmoke -count=1 -v
+```
+
+The Pinecone smoke test creates a disposable Pinecone Serverless index, upserts fixture vectors, migrates them into a temporary LambdaDB collection, verifies fetched documents, and deletes both resources in cleanup.
+
 The larger fixture defaults to 64 records. Override it with:
 
 ```bash
-LAMBDADB_MIGRATION_REAL_LARGE_COUNT=250
+LAMBDADB_MIGRATION_QDRANT_REAL_LARGE_COUNT=250
 ```

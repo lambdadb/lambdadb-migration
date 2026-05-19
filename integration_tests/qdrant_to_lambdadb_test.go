@@ -28,8 +28,8 @@ func boolPtr(value bool) *bool {
 }
 
 func TestQdrantToLambdaDBMockIntegration(t *testing.T) {
-	if os.Getenv("LAMBDADB_MIGRATION_RUN_INTEGRATION") != "1" {
-		t.Skip("set LAMBDADB_MIGRATION_RUN_INTEGRATION=1 and run Qdrant from integration_tests/compose/qdrant.yaml")
+	if !envEnabled("LAMBDADB_MIGRATION_RUN_QDRANT_MOCK_E2E", "LAMBDADB_MIGRATION_RUN_INTEGRATION") {
+		t.Skip("set LAMBDADB_MIGRATION_RUN_QDRANT_MOCK_E2E=1 and run Qdrant from integration_tests/compose/qdrant.yaml")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -216,8 +216,8 @@ func TestQdrantToLambdaDBMockIntegration(t *testing.T) {
 }
 
 func TestQdrantToLambdaDBCheckpointCleanup(t *testing.T) {
-	if os.Getenv("LAMBDADB_MIGRATION_RUN_INTEGRATION") != "1" {
-		t.Skip("set LAMBDADB_MIGRATION_RUN_INTEGRATION=1 and run Qdrant from integration_tests/compose/qdrant.yaml")
+	if !envEnabled("LAMBDADB_MIGRATION_RUN_QDRANT_MOCK_E2E", "LAMBDADB_MIGRATION_RUN_INTEGRATION") {
+		t.Skip("set LAMBDADB_MIGRATION_RUN_QDRANT_MOCK_E2E=1 and run Qdrant from integration_tests/compose/qdrant.yaml")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

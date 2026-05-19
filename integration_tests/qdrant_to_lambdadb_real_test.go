@@ -17,8 +17,8 @@ import (
 )
 
 func TestQdrantToRealLambdaDBSmoke(t *testing.T) {
-	if os.Getenv("LAMBDADB_MIGRATION_RUN_REAL_E2E") != "1" {
-		t.Skip("set LAMBDADB_MIGRATION_RUN_REAL_E2E=1 with LambdaDB env vars and run Qdrant from integration_tests/compose/qdrant.yaml")
+	if !envEnabled("LAMBDADB_MIGRATION_RUN_QDRANT_REAL_E2E", "LAMBDADB_MIGRATION_RUN_REAL_E2E") {
+		t.Skip("set LAMBDADB_MIGRATION_RUN_QDRANT_REAL_E2E=1 with LambdaDB env vars and run Qdrant from integration_tests/compose/qdrant.yaml")
 	}
 
 	baseURL := os.Getenv("LAMBDADB_BASE_URL")
@@ -41,10 +41,10 @@ func TestQdrantToRealLambdaDBSmoke(t *testing.T) {
 		sdk.WithAPIKey(apiKey),
 	)
 	largeCount := 64
-	if raw := os.Getenv("LAMBDADB_MIGRATION_REAL_LARGE_COUNT"); raw != "" {
+	if raw := envAny("LAMBDADB_MIGRATION_QDRANT_REAL_LARGE_COUNT", "LAMBDADB_MIGRATION_REAL_LARGE_COUNT"); raw != "" {
 		parsed, err := strconv.Atoi(raw)
 		if err != nil || parsed < 1 {
-			t.Fatalf("LAMBDADB_MIGRATION_REAL_LARGE_COUNT=%q, want positive integer", raw)
+			t.Fatalf("LAMBDADB_MIGRATION_QDRANT_REAL_LARGE_COUNT=%q, want positive integer", raw)
 		}
 		largeCount = parsed
 	}
