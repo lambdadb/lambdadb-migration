@@ -16,9 +16,10 @@ type Globals struct {
 type CLI struct {
 	Globals
 
-	Inventory InventoryCmd       `cmd:"" help:"Inspect a source and generate a LambdaDB migration mapping."`
-	Qdrant    MigrateQdrantCmd   `cmd:"" help:"Migrate data from Qdrant to LambdaDB."`
-	Pinecone  MigratePineconeCmd `cmd:"" help:"Migrate data from Pinecone Serverless to LambdaDB."`
+	Inventory     InventoryCmd            `cmd:"" help:"Inspect a source and generate a LambdaDB migration mapping."`
+	Qdrant        MigrateQdrantCmd        `cmd:"" help:"Migrate data from Qdrant to LambdaDB."`
+	Pinecone      MigratePineconeCmd      `cmd:"" help:"Migrate data from Pinecone Serverless to LambdaDB."`
+	Elasticsearch MigrateElasticsearchCmd `cmd:"" help:"Migrate data from Elasticsearch to LambdaDB."`
 }
 
 func Execute(version, commit string) {

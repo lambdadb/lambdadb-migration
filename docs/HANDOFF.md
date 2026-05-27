@@ -1,6 +1,6 @@
 # LambdaDB Migration Handoff
 
-Last updated: 2026-05-11
+Last updated: 2026-05-28
 
 This document records the current implementation state so work can continue in another chat/session without rediscovering context.
 
@@ -10,19 +10,15 @@ This document records the current implementation state so work can continue in a
 /Users/steven/Dev/lambdadb-migration
 ```
 
-The folder is now a git repository. Recent implementation commits:
+The folder is a git repository. Recent implementation commits include:
 
 ```bash
-5762535 Initial LambdaDB migration scaffold
-d087187 Fix checkpoint cursors and split write batches
-43f9d1c Update handoff after batch work
-ca7906c Add migration mapping validation
-a807423 Normalize LambdaDB field names
-41be3d6 Support YAML mapping files
-98e423e Add Qdrant integration fixture
-196d62c Handle Qdrant legacy dense vector output
-ec30b5a Update handoff after live integration test
-279638c Harden Qdrant to LambdaDB migration
+8905e47 Add validation reports and query overlap checks
+44e2c96 Require LambdaDB connection settings
+d8ca27d Add Pinecone migration source
+bb52f3b Validate sparse query overlap
+b453216 Validate Pinecone sparse query overlap
+bf887aa Document Pinecone namespace migration behavior
 ```
 
 ## Product Direction
@@ -31,7 +27,7 @@ This is a migration-to-LambdaDB CLI.
 
 - Sources: eventually support the same source set as Qdrant's migration project.
 - Target: LambdaDB only.
-- Source implementations: Qdrant is hardened/published; Pinecone Serverless MVP is now implemented.
+- Source implementations: Qdrant is hardened/published; Pinecone Serverless MVP is implemented; Elasticsearch MVP is implemented with REST mapping inventory and PIT/search_after reads.
 - Official LambdaDB Go SDK: `github.com/lambdadb/go-lambdadb`.
 - Qdrant source client: `github.com/qdrant/go-client/qdrant`.
 - Pinecone source client: `github.com/pinecone-io/go-pinecone/v5/pinecone`.
@@ -66,6 +62,10 @@ The architecture intentionally does not fork Qdrant's repository as-is. It uses 
 - Pinecone Serverless migration uses Pinecone's vector listing API, then fetches vector values and metadata by ID.
 - Pinecone dense vectors map to LambdaDB `dense`; Pinecone sparse values map to LambdaDB sparse vector field `sparse`.
 - Pinecone metadata index settings are not currently introspected, so generated mappings store metadata payloads without generated LambdaDB index configs.
+- Elasticsearch migration uses the REST API without an external Go SDK dependency.
+- Elasticsearch mappings are converted into LambdaDB scalar/text/vector index configs where possible.
+- Elasticsearch `dense_vector` fields are fetched explicitly via search `fields` because they may be excluded from `_source` in search responses.
+- Elasticsearch reads use point-in-time `search_after`; saved PIT checkpoints can expire and may require `--migration.restart`.
 - Local file checkpoints are the default. The tool does not create a LambdaDB checkpoint collection.
 - Bulk upsert is the default LambdaDB write mode, with regular upsert available via flag.
 
@@ -83,6 +83,7 @@ The architecture intentionally does not fork Qdrant's repository as-is. It uses 
 ├── README.md
 ├── cmd/
 │   ├── inventory.go
+│   ├── migrate_from_elasticsearch.go
 │   ├── migrate_from_pinecone.go
 │   ├── migrate_from_qdrant.go
 │   ├── migrate_from_qdrant_test.go
@@ -99,6 +100,7 @@ The architecture intentionally does not fork Qdrant's repository as-is. It uses 
 ├── integration_tests/
 │   ├── compose/
 │   │   └── qdrant.yaml
+│   ├── env.go
 │   ├── pinecone_to_lambdadb_real_test.go
 │   ├── qdrant_to_lambdadb_real_test.go
 │   └── qdrant_to_lambdadb_test.go
@@ -124,6 +126,13 @@ The architecture intentionally does not fork Qdrant's repository as-is. It uses 
 │   ├── pipeline/
 │   │   └── runner.go
 │   ├── source/
+│   │   ├── elasticsearch/
+│   │   │   ├── client.go
+│   │   │   ├── client_test.go
+│   │   │   ├── inventory.go
+│   │   │   ├── inventory_test.go
+│   │   │   ├── record.go
+│   │   │   └── test_helpers_test.go
 │   │   ├── pinecone/
 │   │   │   ├── client.go
 │   │   │   ├── client_test.go
@@ -160,16 +169,20 @@ The CLI builds and exposes:
 go run . --help
 go run . inventory qdrant --help
 go run . inventory pinecone --help
+go run . inventory elasticsearch --help
 go run . qdrant --help
 go run . pinecone --help
+go run . elasticsearch --help
 ```
 
 Commands:
 
 - `inventory qdrant`: connects to Qdrant, inspects collection metadata/count, and emits JSON/YAML containing inventory plus generated LambdaDB mapping.
 - `inventory pinecone`: connects to Pinecone, inspects Serverless index metadata/count, and emits JSON/YAML containing inventory plus generated LambdaDB mapping.
+- `inventory elasticsearch`: connects to Elasticsearch, inspects index mapping/count, and emits JSON/YAML containing inventory plus generated LambdaDB mapping.
 - `qdrant`: connects to Qdrant and LambdaDB, optionally creates LambdaDB collection, scrolls Qdrant points, transforms to LambdaDB documents, writes to LambdaDB, and saves a local checkpoint.
 - `pinecone`: connects to Pinecone and LambdaDB, optionally creates LambdaDB collection, lists/fetches Pinecone vectors, transforms to LambdaDB documents, writes to LambdaDB, and saves a local checkpoint.
+- `elasticsearch`: connects to Elasticsearch and LambdaDB, optionally creates LambdaDB collection, reads Elasticsearch documents through PIT/search_after, transforms them to LambdaDB documents, writes to LambdaDB, and saves a local checkpoint.
 
 ### Config
 
@@ -177,6 +190,7 @@ Implemented in `internal/config`:
 
 - `QdrantConfig`
 - `PineconeConfig`
+- `ElasticsearchConfig`
 - `LambdaDBConfig`
 - `MigrationConfig`
 - `MappingConfig`
@@ -215,6 +229,13 @@ Important CLI flags:
 --pinecone.index
 --pinecone.namespace
 --pinecone.list-prefix
+--elasticsearch.url
+--elasticsearch.api-key
+--elasticsearch.username
+--elasticsearch.password
+--elasticsearch.index
+--elasticsearch.vector-fields
+--elasticsearch.pit-keep-alive
 --lambdadb.base-url
 --lambdadb.project-name
 --lambdadb.api-key
@@ -247,7 +268,7 @@ Important CLI flags:
 - fetches up to `--migration.validation-sample-size` migrated sample documents with strongly consistent reads
 - compares sampled fields, including dense vectors and sparse vectors
 - writes a structured JSON report when `--migration.validation-report` is set; the report includes status, counts, sampled IDs, compared count, and errors
-- optionally compares source and LambdaDB dense/sparse vector query results for validation samples when `--migration.query-overlap` is set
+- optionally compares source and LambdaDB dense/sparse vector query results for validation samples when `--migration.query-overlap` is set; this is currently implemented for Qdrant and Pinecone, not Elasticsearch
 
 Note: real LambdaDB smoke tests observed `numDocs=0` even after accepted writes, so `numDocs` is currently reported but not treated as the primary pass/fail signal. Sample fetch/field comparison is the stronger validation check.
 
@@ -331,6 +352,39 @@ Namespace behavior:
 - Pinecone can store the same vector ID in different namespaces, so any future multi-namespace migration into one LambdaDB collection needs an explicit collision strategy, for example prefixing IDs with the namespace.
 - Current safe usage is to run one migration per namespace, typically into separate LambdaDB collections unless the user has planned a stable merged-ID scheme.
 
+### Elasticsearch Source
+
+Implemented in `internal/source/elasticsearch`:
+
+- `New(config.ElasticsearchConfig)`
+- `Close`
+- `Name`
+- `Count`
+- `Inventory`
+- `Read`
+
+Inventory currently extracts:
+
+- exact source count from `_count`
+- `dense_vector` fields, dimensions, and similarity from index mappings
+- scalar/text payload index fields from index mappings
+- nested object leaf fields as dot-path payload fields
+- warnings for multi-fields, nested fields, unsupported mapping types, missing vectors, and PIT checkpoint expiry
+
+Read currently:
+
+- opens an Elasticsearch point in time with `--elasticsearch.pit-keep-alive`
+- pages with `search_after` sorted by `_shard_doc`
+- fetches discovered or explicitly configured dense vector fields through search `fields`
+- flattens `_source` nested objects into dot-path payload fields so the shared mapping normalization path can rename them for LambdaDB
+- stores the latest PIT ID and `search_after` values as checkpoint cursor state
+
+Limitations:
+
+- Query-overlap validation is not implemented for Elasticsearch yet.
+- PIT-backed checkpoints are not durable after the PIT expires; use `--migration.restart` if a resumed migration fails because the saved PIT is invalid.
+- Elasticsearch Query DSL, aggregations, nested query semantics, analyzers, ingest pipelines, aliases, and compatibility-SDK behavior are not emulated.
+
 ### LambdaDB Target
 
 Implemented in `internal/target/lambdadb`:
@@ -408,8 +462,10 @@ go test ./...
 go run . --help
 go run . inventory qdrant --help
 go run . inventory pinecone --help
+go run . inventory elasticsearch --help
 go run . qdrant --help
 go run . pinecone --help
+go run . elasticsearch --help
 ```
 
 Latest `go test ./...` result:
@@ -422,6 +478,7 @@ ok   github.com/lambdadb/lambdadb-migration/internal/checkpoint
 ok   github.com/lambdadb/lambdadb-migration/internal/config
 ?    github.com/lambdadb/lambdadb-migration/internal/pipeline [no test files]
 ?    github.com/lambdadb/lambdadb-migration/internal/source [no test files]
+ok   github.com/lambdadb/lambdadb-migration/internal/source/elasticsearch
 ok   github.com/lambdadb/lambdadb-migration/internal/source/qdrant
 ok   github.com/lambdadb/lambdadb-migration/internal/target/lambdadb
 ok   github.com/lambdadb/lambdadb-migration/internal/transform
@@ -546,7 +603,7 @@ LambdaDB writes now retry transient failures with bounded exponential backoff, c
 
 ### Validation Has Fetch-Based Report And Query Overlap
 
-`--migration.validate` now checks accepted count and compares configurable fetched sample documents. `--migration.validation-report` writes a JSON report and implies validation. `--migration.query-overlap` compares dense and sparse vector nearest-neighbor result overlap between the source and LambdaDB for validation samples when those vector mappings are present. It reports overlap by default and only fails validation when `--migration.query-overlap-min-ratio` is above `0` and the average falls below that threshold. Remaining validation gaps:
+`--migration.validate` now checks accepted count and compares configurable fetched sample documents. `--migration.validation-report` writes a JSON report and implies validation. `--migration.query-overlap` compares dense and sparse vector nearest-neighbor result overlap between the source and LambdaDB for validation samples when those vector mappings are present. It currently supports Qdrant and Pinecone sources only; Elasticsearch migrations should use count/sample validation until source-side vector search is implemented. It reports overlap by default and only fails validation when `--migration.query-overlap-min-ratio` is above `0` and the average falls below that threshold. Remaining validation gaps:
 
 - `numDocs` is reported but not used as a pass/fail signal because real smoke tests observed it staying at 0 after successful writes and fetches
 - hybrid and filter-heavy overlap are technically feasible for curated fixtures, but not generally inferable from mapping alone; they should use explicit representative query fixtures/config if implemented
@@ -608,12 +665,16 @@ Completed for current publish scope:
 3. Installer full download/install/help/uninstall has been verified against `v0.1.3`; repeat against `v0.1.4` if release smoke verification is needed.
 4. Larger live bulk coverage has reached 250 documents; larger customer-scale runs are optional rather than a near-term blocker.
 5. Pinecone Serverless MVP and disposable dense/sparse live smoke have passed.
+6. Elasticsearch MVP is implemented locally with REST mapping inventory, PIT/search_after reads, dense vector extraction, unit tests, and README/HANDOFF coverage.
 
 Recommended next work:
 
-1. Add an explicit Pinecone multi-namespace migration design before implementing it. Decide whether to support namespace enumeration, namespace-to-collection mapping, and/or an ID rewrite strategy such as `{namespace}:{id}` for safe merges.
-2. If query validation remains the priority, add explicit representative fixtures/config for hybrid and filter-heavy overlap.
-3. Continue source coverage after Pinecone, likely Chroma or Weaviate depending on customer pull.
+1. Add an Elasticsearch live smoke path against a small disposable index and real LambdaDB collection before release confidence claims.
+2. Decide whether OpenSearch should share the Elasticsearch connector or get an explicit source command/config surface.
+3. If Elasticsearch query-overlap validation is needed, implement source-side vector search and document the limits separately from Qdrant/Pinecone.
+4. Add an explicit Pinecone multi-namespace migration design before implementing it. Decide whether to support namespace enumeration, namespace-to-collection mapping, and/or an ID rewrite strategy such as `{namespace}:{id}` for safe merges.
+5. If query validation remains the priority, add explicit representative fixtures/config for hybrid and filter-heavy overlap.
+6. Continue source coverage after Elasticsearch/OpenSearch, likely Chroma or Weaviate depending on customer pull.
 
 ## Files To Read First In The Next Session
 
@@ -621,13 +682,17 @@ Start here:
 
 1. `docs/HANDOFF.md`
 2. `DESIGN.md`
-3. `cmd/migrate_from_qdrant.go`
-4. `internal/source/qdrant/client.go`
-5. `internal/source/qdrant/inventory.go`
-6. `internal/source/qdrant/record.go`
-7. `internal/target/lambdadb/client.go`
-8. `internal/target/lambdadb/schema.go`
-9. `internal/transform/ids.go`
+3. `cmd/migrate_from_elasticsearch.go`
+4. `internal/source/elasticsearch/client.go`
+5. `internal/source/elasticsearch/inventory.go`
+6. `internal/source/elasticsearch/record.go`
+7. `cmd/migrate_from_qdrant.go`
+8. `internal/source/qdrant/client.go`
+9. `internal/source/qdrant/inventory.go`
+10. `internal/source/qdrant/record.go`
+11. `internal/target/lambdadb/client.go`
+12. `internal/target/lambdadb/schema.go`
+13. `internal/transform/ids.go`
 
 ## Current Dependencies
 

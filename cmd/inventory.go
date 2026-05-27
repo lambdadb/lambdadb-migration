@@ -6,13 +6,15 @@ import (
 	"os"
 
 	"github.com/lambdadb/lambdadb-migration/internal/config"
+	elasticsearchsource "github.com/lambdadb/lambdadb-migration/internal/source/elasticsearch"
 	pineconesource "github.com/lambdadb/lambdadb-migration/internal/source/pinecone"
 	qdrantsource "github.com/lambdadb/lambdadb-migration/internal/source/qdrant"
 )
 
 type InventoryCmd struct {
-	Qdrant   InventoryQdrantCmd   `cmd:"" help:"Inspect a Qdrant collection."`
-	Pinecone InventoryPineconeCmd `cmd:"" help:"Inspect a Pinecone Serverless index."`
+	Qdrant        InventoryQdrantCmd        `cmd:"" help:"Inspect a Qdrant collection."`
+	Pinecone      InventoryPineconeCmd      `cmd:"" help:"Inspect a Pinecone Serverless index."`
+	Elasticsearch InventoryElasticsearchCmd `cmd:"" help:"Inspect an Elasticsearch index."`
 }
 
 type InventoryQdrantCmd struct {
@@ -77,6 +79,49 @@ func (c *InventoryPineconeCmd) Run(globals *Globals) error {
 	}
 
 	mapping := config.MappingFromInventory(inv, c.Pinecone.Index)
+	out := struct {
+		Inventory any                  `json:"inventory" yaml:"inventory"`
+		Mapping   config.MappingConfig `json:"mapping" yaml:"mapping"`
+	}{
+		Inventory: inv,
+		Mapping:   mapping,
+	}
+
+	data, err := marshalOutput(c.Output, out)
+	if err != nil {
+		return fmt.Errorf("encode inventory: %w", err)
+	}
+
+	if c.Output == "-" {
+		_, err = os.Stdout.Write(data)
+		return err
+	}
+	if err := os.WriteFile(c.Output, data, 0o644); err != nil {
+		return fmt.Errorf("write inventory output: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "wrote %s inventory mapping to %s\n", outputFormatName(c.Output), c.Output)
+	return nil
+}
+
+type InventoryElasticsearchCmd struct {
+	Elasticsearch config.ElasticsearchConfig `embed:"" prefix:"elasticsearch."`
+	Output        string                     `help:"Output path for generated mapping. Use '-' for stdout. .yaml/.yml outputs use YAML; other outputs use JSON." default:"-"`
+}
+
+func (c *InventoryElasticsearchCmd) Run(globals *Globals) error {
+	ctx := context.Background()
+	src, err := elasticsearchsource.New(c.Elasticsearch)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	inv, err := src.Inventory(ctx)
+	if err != nil {
+		return err
+	}
+
+	mapping := config.MappingFromInventory(inv, c.Elasticsearch.Index)
 	out := struct {
 		Inventory any                  `json:"inventory" yaml:"inventory"`
 		Mapping   config.MappingConfig `json:"mapping" yaml:"mapping"`

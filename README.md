@@ -2,7 +2,7 @@
 
 CLI tooling for migrating vector databases and search systems into LambdaDB.
 
-Supported sources include Qdrant and Pinecone Serverless. LambdaDB is the only target.
+Supported sources include Qdrant, Pinecone Serverless, and Elasticsearch. LambdaDB is the only target.
 
 ## Quickstart
 
@@ -25,6 +25,7 @@ Make sure the install directory is on your `PATH`, then check the CLI:
 lambdadb-migration --help
 lambdadb-migration qdrant --help
 lambdadb-migration pinecone --help
+lambdadb-migration elasticsearch --help
 ```
 
 Install a specific version:
@@ -158,9 +159,63 @@ The Pinecone connector uses Pinecone's vector listing API, which is available fo
 
 Pinecone operations are namespace-scoped. If `--pinecone.namespace` is omitted, the connector reads Pinecone's default namespace only; it does not iterate over every namespace in the index. For multi-namespace indexes, run one migration per namespace or use separate LambdaDB collections. Pinecone can store the same vector ID in different namespaces, so merging multiple namespaces into one LambdaDB collection requires an explicit ID strategy such as prefixing IDs with the namespace.
 
+## Elasticsearch To LambdaDB
+
+Set your Elasticsearch API key and LambdaDB connection values:
+
+```bash
+export ELASTIC_API_KEY="your-elasticsearch-api-key"
+export LAMBDADB_BASE_URL="your-region-specific-lambdadb-base-url"
+export LAMBDADB_PROJECT_NAME="your-lambdadb-project-name"
+export LAMBDADB_PROJECT_API_KEY="your-project-api-key"
+```
+
+Generate an inventory and editable mapping from an Elasticsearch index:
+
+```bash
+lambdadb-migration inventory elasticsearch \
+  --elasticsearch.url https://your-elasticsearch-endpoint \
+  --elasticsearch.index articles \
+  --output elasticsearch-inventory.yaml
+```
+
+Review `elasticsearch-inventory.yaml`, then run a dry-run:
+
+```bash
+lambdadb-migration elasticsearch \
+  --elasticsearch.url https://your-elasticsearch-endpoint \
+  --elasticsearch.index articles \
+  --lambdadb.base-url "$LAMBDADB_BASE_URL" \
+  --lambdadb.project-name "$LAMBDADB_PROJECT_NAME" \
+  --lambdadb.api-key "$LAMBDADB_PROJECT_API_KEY" \
+  --lambdadb.collection articles \
+  --mapping-file elasticsearch-inventory.yaml \
+  --migration.dry-run
+```
+
+Run the migration with validation:
+
+```bash
+lambdadb-migration elasticsearch \
+  --elasticsearch.url https://your-elasticsearch-endpoint \
+  --elasticsearch.index articles \
+  --lambdadb.base-url "$LAMBDADB_BASE_URL" \
+  --lambdadb.project-name "$LAMBDADB_PROJECT_NAME" \
+  --lambdadb.api-key "$LAMBDADB_PROJECT_API_KEY" \
+  --lambdadb.collection articles \
+  --mapping-file elasticsearch-inventory.yaml \
+  --migration.write-mode bulk \
+  --migration.validate \
+  --migration.validation-report validation-report.json
+```
+
+The Elasticsearch connector inventories index mappings, maps supported scalar fields and `dense_vector` fields, reads documents with point-in-time `search_after` pagination, and fetches dense vectors explicitly with the search `fields` parameter. Nested `_source` objects are flattened into dot-path payload fields before LambdaDB field-name normalization.
+
+Elasticsearch point-in-time IDs can expire. If a resumed migration fails because the saved PIT is no longer valid, rerun the migration with `--migration.restart`.
+
 ## Common Options
 
-`inventory qdrant` and `inventory pinecone` write YAML for `.yaml`/`.yml` outputs and JSON otherwise. `--mapping-file` accepts either JSON or YAML, as a direct mapping object or as the wrapped output produced by an inventory command.
+`inventory qdrant`, `inventory pinecone`, and `inventory elasticsearch` write YAML for `.yaml`/`.yml` outputs and JSON otherwise. `--mapping-file` accepts either JSON or YAML, as a direct mapping object or as the wrapped output produced by an inventory command.
 
 Useful migration safety flags:
 
@@ -181,7 +236,7 @@ Generated inventory mappings set `target.createCollection: true` by default, so 
 
 `--migration.validation-report` writes a JSON report with pass/fail status, source and accepted counts, LambdaDB `numDocs`, sampled document IDs, compared sample count, query overlap results, and validation errors. Setting it also enables validation.
 
-`--migration.query-overlap` adds dense and sparse vector query overlap checks for validation samples when those vector mappings are present. By default it reports overlap without failing; set `--migration.query-overlap-min-ratio` above `0` to require a minimum average overlap.
+`--migration.query-overlap` adds dense and sparse vector query overlap checks for validation samples when those vector mappings are present. By default it reports overlap without failing; set `--migration.query-overlap-min-ratio` above `0` to require a minimum average overlap. Query-overlap validation currently supports Qdrant and Pinecone sources; Elasticsearch migrations can use count/sample validation, but query-overlap is not implemented for Elasticsearch yet.
 
 ## Uninstall
 
@@ -262,8 +317,10 @@ Run from source:
 go run . --help
 go run . inventory qdrant --help
 go run . inventory pinecone --help
+go run . inventory elasticsearch --help
 go run . qdrant --help
 go run . pinecone --help
+go run . elasticsearch --help
 ```
 
 Build a Docker image:
