@@ -11,7 +11,7 @@ Verified against [LambdaDB develop at d1a7665](https://github.com/lambdadb/lambd
 - Create returns HTTP 201 with a `collection` metadata object. Describe also wraps its metadata in `collection`. Neither exposes `collectionStatus`.
 - The SDK forwards upload `headers`, including `If-None-Match: *`, and sets `Content-Type: application/json`. The completion request's optional `type` is distinct from the required object upload header.
 - Upload retries obtain fresh signed URLs. SDK completion retries can reuse the already uploaded object without issuing another PUT. Storage 412 stops the write without completion.
-- Checkpoint format and migration loop are unchanged. Regression tests cover partial source-page failure, page replay on resume, accepted counts, explicit restart, and optional cleanup in upsert and bulk modes.
+- Checkpoints add optional `sourceDone` and `validationSamples` fields. Only successful writes can advance the checkpoint; source exhaustion is saved even when the final page is empty. Completed checkpoints skip source reads/writes but still run requested validation and cleanup. Regression tests cover partial source-page failure, page replay, accepted counts, restart, completed reruns, and validation retries.
 - Validation for this update uses local HTTP fixtures and local Qdrant with a LambdaDB mock. No new live LambdaDB or Pinecone validation is claimed.
 
 ## Project Location
@@ -445,7 +445,10 @@ Implemented in `internal/checkpoint`:
 
 - `Store` interface
 - `FileStore`
-- JSON checkpoint save/load/delete
+- JSON checkpoint save/load/delete with owner-only file permissions
+- optional `sourceDone` records source exhaustion, not validation success
+- bounded `validationSamples` preserve sampled documents for validation retries without re-uploading
+- older files without `sourceDone` resume from their cursor; already completed legacy migrations require `--migration.restart` for a fresh run because counts cannot safely establish completion
 - checkpoint loads use `json.Decoder.UseNumber` so legacy numeric cursor JSON does not lose uint64 precision
 - Qdrant numeric scroll cursors are saved as decimal strings
 - checkpoints can be deleted after a successful migration with `--migration.cleanup-checkpoint`

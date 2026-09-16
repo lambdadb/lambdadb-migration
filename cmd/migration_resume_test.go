@@ -112,20 +112,20 @@ func TestMigrationCheckpointResume(t *testing.T) {
 			ctx := context.Background()
 			store := checkpoint.NewFileStore(cfg.Migration.CheckpointPath)
 			key := sourceCheckpointKey("qdrant", "source", "test", "articles")
-			assertCheckpoint := func(accepted uint64, cursor string) {
+			assertCheckpoint := func(accepted uint64, done bool) {
 				t.Helper()
 				cp, err := store.Load(ctx, key)
 				if err != nil || cp == nil {
 					t.Fatalf("Load() = %+v, %v", cp, err)
 				}
-				if cp.AcceptedRecords != accepted || cp.Cursor != cursor || cp.SourceKind != "qdrant" || cp.SourceCollection != "source" || cp.TargetCollection != "articles" {
-					t.Fatalf("checkpoint = %+v, want accepted=%d cursor=%s", cp, accepted, cursor)
+				if cp.AcceptedRecords != accepted || cp.SourceDone != done || cp.Cursor != "page2" || cp.SourceKind != "qdrant" || cp.SourceCollection != "source" || cp.TargetCollection != "articles" {
+					t.Fatalf("checkpoint = %+v, want accepted=%d sourceDone=%v cursor=page2", cp, accepted, done)
 				}
 			}
 			if err := runMigration(ctx, cfg); err == nil {
 				t.Fatal("expected injected failure")
 			}
-			assertCheckpoint(1, "page2")
+			assertCheckpoint(1, false)
 			mu.Lock()
 			fail = false
 			mu.Unlock()
@@ -133,7 +133,7 @@ func TestMigrationCheckpointResume(t *testing.T) {
 			if err := runMigration(ctx, cfg); err != nil {
 				t.Fatalf("resume: %v", err)
 			}
-			assertCheckpoint(3, "done")
+			assertCheckpoint(3, true)
 			if !reflect.DeepEqual(src.cursors, []any{"page2"}) {
 				t.Fatalf("resume cursors = %v", src.cursors)
 			}
@@ -150,7 +150,7 @@ func TestMigrationCheckpointResume(t *testing.T) {
 			if err := runMigration(ctx, cfg); err != nil {
 				t.Fatalf("restart: %v", err)
 			}
-			assertCheckpoint(3, "done")
+			assertCheckpoint(3, true)
 			if !reflect.DeepEqual(src.cursors, []any{nil, "page2"}) {
 				t.Fatalf("restart cursors = %v", src.cursors)
 			}
@@ -162,7 +162,7 @@ func TestMigrationCheckpointResume(t *testing.T) {
 			if err := runMigration(ctx, cfg); err != nil {
 				t.Fatalf("cleanup: %v", err)
 			}
-			if !reflect.DeepEqual(src.cursors, []any{"done"}) {
+			if len(src.cursors) != 0 {
 				t.Fatalf("completed cursors = %v", src.cursors)
 			}
 			if cp, err := store.Load(ctx, key); err != nil || cp != nil {
@@ -190,9 +190,7 @@ func (s *resumeSource) Read(_ context.Context, cursor source.Cursor, _ int) (sou
 	case nil:
 		return source.Batch{Records: []source.Record{{ID: "1"}}, NextCursor: &source.Cursor{Value: "page2"}}, nil
 	case "page2":
-		return source.Batch{Records: []source.Record{{ID: "2"}, {ID: "3"}}, NextCursor: &source.Cursor{Value: "done"}, Done: true}, nil
-	case "done":
-		return source.Batch{Done: true}, nil
+		return source.Batch{Records: []source.Record{{ID: "2"}, {ID: "3"}}, Done: true}, nil
 	default:
 		return source.Batch{}, fmt.Errorf("unexpected cursor: %v", cursor.Value)
 	}
