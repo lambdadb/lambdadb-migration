@@ -4,7 +4,7 @@ go 1.26
 
 require (
 	github.com/alecthomas/kong v1.13.0
-	github.com/lambdadb/go-lambdadb v0.3.0
+	github.com/lambdadb/go-lambdadb v0.4.0
 	google.golang.org/grpc v1.78.0
 )
 

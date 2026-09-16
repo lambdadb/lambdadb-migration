@@ -1,8 +1,18 @@
 # LambdaDB Migration Handoff
 
-Last updated: 2026-05-28
+Last updated: 2026-09-16 (LambdaDB contract alignment; earlier live-test results remain historical)
 
 This document records the current implementation state so work can continue in another chat/session without rediscovering context.
+
+## LambdaDB Contract Alignment (2026-09-16)
+
+Verified against [LambdaDB develop at d1a7665](https://github.com/lambdadb/lambdadb/tree/d1a76659884a9ed09283a0b2e2989897dc799247) and [Go SDK v0.4.0](https://github.com/lambdadb/go-lambdadb/tree/v0.4.0):
+
+- Create returns HTTP 201 with a `collection` metadata object. Describe also wraps its metadata in `collection`. Neither exposes `collectionStatus`.
+- The SDK forwards upload `headers`, including `If-None-Match: *`, and sets `Content-Type: application/json`. The completion request's optional `type` is distinct from the required object upload header.
+- Upload retries obtain fresh signed URLs. SDK completion retries can reuse the already uploaded object without issuing another PUT. Storage 412 stops the write without completion.
+- Checkpoint format and migration loop are unchanged. Regression tests cover partial source-page failure, page replay on resume, accepted counts, explicit restart, and optional cleanup in upsert and bulk modes.
+- Validation for this update uses local HTTP fixtures and local Qdrant with a LambdaDB mock. No new live LambdaDB or Pinecone validation is claimed.
 
 ## Project Location
 
@@ -409,7 +419,7 @@ Implemented in `internal/target/lambdadb`:
 
 - checks whether the target collection already exists
 - creates collection if not found and mapping asks to create one
-- waits for the target collection to become `ACTIVE` before writing
+- accepts HTTP 201 creation and wrapped collection metadata via Go SDK `v0.4.0`; the API no longer exposes `collectionStatus`, so no readiness polling is performed
 - builds vector, sparse vector, scalar, text, and object index configs
 - rejects Manhattan/unsupported vector similarity mappings
 
@@ -516,9 +526,9 @@ PASS
 --- PASS: TestPineconeToRealLambdaDBSmoke/sparse
 ```
 
-Notes from the real E2E:
+Historical notes from the real E2E (before the SDK `v0.4.0` update):
 
-- LambdaDB collection creation is asynchronous. `EnsureCollection` now waits until the collection is `ACTIVE` before writing.
+- The older API exposed asynchronous collection status and required an `ACTIVE` wait. The current API removes this field; the wait loop has been removed and transient write retries remain in place.
 - The smoke test now runs with `--migration.validate`, which verifies migrated docs with strongly consistent `Fetch` by ID instead of relying on `numDocs`; `numDocs` has stayed at 0 even though writes were accepted and fetched successfully.
 - The unnamed dense real smoke case also runs `--migration.query-overlap` and passed with average overlap 1.000.
 - The real smoke suite now covers unnamed dense upsert, named dense upsert, dense+sparse payload-index upsert, additional payload index types, unnamed dense bulk write mode, and a larger dense bulk fixture.
@@ -587,7 +597,7 @@ A Qdrant-to-real-LambdaDB smoke suite has passed against the configured dev proj
 
 ### LambdaDB Collection Creation Has Broader Smoke Coverage
 
-`EnsureCollection` builds index configs from mapping and now waits for `ACTIVE` after creation. It has been real-service smoke-tested with unnamed dense, named dense, sparse vector, keyword, long, text, double, datetime, boolean, and object index configs.
+`EnsureCollection` builds index configs from mapping and accepts the current HTTP 201 creation response without status polling. Earlier real-service smoke tests covered unnamed dense, named dense, sparse vector, keyword, long, text, double, datetime, boolean, and object index configs; those results do not validate the SDK `v0.4.0` update against a live LambdaDB service.
 
 ### Checkpoint Cleanup Implemented And Integration Tested
 
@@ -598,7 +608,7 @@ Checkpoints are retained by default. `--migration.cleanup-checkpoint` deletes th
 LambdaDB writes now retry transient failures with bounded exponential backoff, configurable from CLI flags.
 
 - retry behavior is unit-tested and exercised against a controlled mock 503 fixture
-- collection creation/get calls rely on SDK behavior plus the existing `ACTIVE` wait loop
+- collection creation/get calls rely on SDK behavior; transient writes retain the configured bounded retry policy
 - a real-service controlled 429/5xx fixture is not currently available; treat that as optional future hardening rather than a release blocker
 
 ### Validation Has Fetch-Based Report And Query Overlap
@@ -700,7 +710,7 @@ From `go.mod`:
 
 ```text
 github.com/alecthomas/kong v1.13.0
-github.com/lambdadb/go-lambdadb v0.3.0
+github.com/lambdadb/go-lambdadb v0.4.0
 github.com/pinecone-io/go-pinecone/v5 v5.4.1
 github.com/qdrant/go-client v1.17.1
 ```

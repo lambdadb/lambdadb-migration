@@ -10,16 +10,13 @@ import (
 
 	sdk "github.com/lambdadb/go-lambdadb"
 	"github.com/lambdadb/go-lambdadb/models/apierrors"
-	"github.com/lambdadb/go-lambdadb/models/components"
 	"github.com/lambdadb/lambdadb-migration/internal/config"
 	"github.com/lambdadb/lambdadb-migration/internal/source"
 )
 
 const (
-	collectionReadyPollInterval = 500 * time.Millisecond
-	collectionReadyTimeout      = 30 * time.Second
-	consistentRead              = true
-	includeVectors              = true
+	consistentRead = true
+	includeVectors = true
 )
 
 var defaultWriteRetryPolicy = WriteRetryPolicy{
@@ -63,8 +60,8 @@ func (t *Target) EnsureCollection(ctx context.Context, inv *source.Inventory, ma
 	if !mapping.Target.CreateCollection {
 		return nil
 	}
-	if collection, err := t.client.Collection(t.collection).Get(ctx); err == nil {
-		return t.waitForActiveCollection(ctx, collectionReadyTimeout, collection)
+	if _, err := t.client.Collection(t.collection).Get(ctx); err == nil {
+		return nil
 	} else {
 		var notFound *apierrors.ResourceNotFoundError
 		if !errors.As(err, &notFound) {
@@ -83,40 +80,9 @@ func (t *Target) EnsureCollection(ctx context.Context, inv *source.Inventory, ma
 	if err != nil {
 		return fmt.Errorf("create LambdaDB collection: %w", err)
 	}
-	return t.waitForActiveCollection(ctx, collectionReadyTimeout, nil)
-}
-
-func (t *Target) waitForActiveCollection(ctx context.Context, timeout time.Duration, first *components.CollectionResponse) error {
-	waitCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	collection := first
-	for {
-		if collection != nil {
-			switch collection.CollectionStatus {
-			case components.StatusActive, "":
-				return nil
-			case components.StatusDeleting:
-				return fmt.Errorf("LambdaDB collection %q is deleting", t.collection)
-			}
-		}
-
-		select {
-		case <-waitCtx.Done():
-			status := components.Status("")
-			if collection != nil {
-				status = collection.CollectionStatus
-			}
-			return fmt.Errorf("wait for LambdaDB collection %q to become ACTIVE: last status %q: %w", t.collection, status, waitCtx.Err())
-		case <-time.After(collectionReadyPollInterval):
-		}
-
-		next, err := t.client.Collection(t.collection).Get(ctx)
-		if err != nil {
-			return fmt.Errorf("get LambdaDB collection while waiting for ACTIVE: %w", err)
-		}
-		collection = next
-	}
+	// The current API returns HTTP 201 with collection metadata, without a
+	// readiness status. Transient write failures use the existing write retry policy.
+	return nil
 }
 
 func (t *Target) Write(ctx context.Context, docs []map[string]any) error {

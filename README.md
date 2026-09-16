@@ -234,6 +234,8 @@ Useful migration safety flags:
 
 Generated inventory mappings set `target.createCollection: true` by default, so the migration creates the LambdaDB collection when it is missing. Use `--migration.create-collection=false` to require the target collection to exist, or `--migration.create-collection=true` to override a mapping file that has collection creation disabled.
 
+The target uses LambdaDB Go SDK `v0.4.0`. Collection creation returns HTTP 201 with collection metadata; the current API has no `collectionStatus` readiness field to poll. Transient write errors use the configured retry policy. Bulk uploads forward the signed headers returned by LambdaDB (including `If-None-Match: *`) and send `Content-Type: application/json`. A retried upload obtains a fresh URL; checkpoints advance only after every write for a source batch succeeds.
+
 `--migration.validation-report` writes a JSON report with pass/fail status, source and accepted counts, LambdaDB `numDocs`, sampled document IDs, compared sample count, query overlap results, and validation errors. Setting it also enables validation.
 
 `--migration.query-overlap` adds dense and sparse vector query overlap checks for validation samples when those vector mappings are present. By default it reports overlap without failing; set `--migration.query-overlap-min-ratio` above `0` to require a minimum average overlap. Query-overlap validation currently supports Qdrant and Pinecone sources; Elasticsearch migrations can use count/sample validation, but query-overlap is not implemented for Elasticsearch yet.
