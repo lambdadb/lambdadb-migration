@@ -45,7 +45,12 @@ func (s *FileStore) Save(ctx context.Context, key string, checkpoint Checkpoint)
 	if err != nil {
 		return fmt.Errorf("encode checkpoint: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	// Checkpoints may contain sampled documents for validation on resume.
+	// Restrict existing files too; WriteFile's mode only applies to new files.
+	if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("restrict checkpoint permissions: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("write checkpoint: %w", err)
 	}
 	return nil

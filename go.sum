@@ -26,8 +26,8 @@ github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+
 github.com/hexops/gotextdiff v1.0.3 h1:gitA9+qJrrTCsiCl7+kh75nPqQt1cx4ZkudSTLoUqJM=
 github.com/hexops/gotextdiff v1.0.3/go.mod h1:pSWU5MAI3yDq+fZBTazCSJysOMbxWL1BSow5/V2vxeg=
 github.com/juju/gnuflag v0.0.0-20171113085948-2ce1bb71843d/go.mod h1:2PavIy+JPciBPrBUjwbNvtwB6RQlve+hkpll6QSNmOE=
-github.com/lambdadb/go-lambdadb v0.3.0 h1:54phR4frbng/awUnWuqmD/4fch1JfMARaGuIWmV7QMc=
-github.com/lambdadb/go-lambdadb v0.3.0/go.mod h1:TynCL5L/PF2/0TU8LIZcaA5yFvBDUxPwOtPJrsF8+Co=
+github.com/lambdadb/go-lambdadb v0.4.0 h1:CfegtF+LxQPPptD0Ud+QobAWEzzrKxnannaa8CoUBd0=
+github.com/lambdadb/go-lambdadb v0.4.0/go.mod h1:TynCL5L/PF2/0TU8LIZcaA5yFvBDUxPwOtPJrsF8+Co=
 github.com/oapi-codegen/runtime v1.1.1 h1:EXLHh0DXIJnWhdRPN2w4MXAzFyE4CskzhNLUmtpMYro=
 github.com/oapi-codegen/runtime v1.1.1/go.mod h1:SK9X900oXmPWilYR5/WKPzt3Kqxn/uS/+lbpREv+eCg=
 github.com/pinecone-io/go-pinecone/v5 v5.4.1 h1:JJJ4VIu5NpFc3BIRcjc93n/XxYtACwRjRI/e6eHoOIU=

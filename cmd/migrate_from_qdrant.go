@@ -95,6 +95,7 @@ func runMigration(ctx context.Context, c migrationRunConfig) error {
 	key := sourceCheckpointKey(c.SourceKind, c.SourceCollection, c.LambdaDB.ProjectName, c.LambdaDB.Collection)
 	var cursorValue any
 	var accepted uint64
+	var sourceDone bool
 	shouldValidate := c.Migration.Validate || c.Migration.ValidationReport != "" || c.Migration.QueryOverlap
 	sampleLimit := c.Migration.ValidationSampleSize
 	samples := make([]map[string]any, 0, sampleLimit)
@@ -107,20 +108,21 @@ func runMigration(ctx context.Context, c migrationRunConfig) error {
 		if cp != nil {
 			cursorValue = cp.Cursor
 			accepted = cp.AcceptedRecords
+			sourceDone = cp.SourceDone
+			samples = cp.ValidationSamples[:minInt(len(cp.ValidationSamples), sampleLimit)]
 			fmt.Fprintf(os.Stderr, "resuming from checkpoint: acceptedRecords=%d\n", accepted)
 		}
 	}
 	progress := newProgressTracker(inv.RecordCount, accepted, startedAt)
 
-	for {
+	if sourceDone && shouldValidate && sampleLimit > 0 && accepted > 0 && len(samples) == 0 {
+		return fmt.Errorf("completed checkpoint has no validation samples; use --migration.restart to collect samples, or --migration.validation-sample-size=0 for count-only validation")
+	}
+	for !sourceDone {
 		batch, err := c.Source.Read(ctx, source.Cursor{Value: cursorValue}, c.Migration.BatchSize)
 		if err != nil {
 			return err
 		}
-		if len(batch.Records) == 0 && batch.Done {
-			break
-		}
-
 		docs := make([]map[string]any, 0, len(batch.Records))
 		for _, record := range batch.Records {
 			doc, err := transform.RecordToDocumentWithMapping(record, mapping)
@@ -146,13 +148,16 @@ func runMigration(ctx context.Context, c migrationRunConfig) error {
 		if batch.NextCursor != nil {
 			cursorValue = batch.NextCursor.Value
 		}
+		sourceDone = batch.Done
 		if err := store.Save(ctx, key, checkpoint.Checkpoint{
-			SourceKind:       c.SourceKind,
-			SourceCollection: c.SourceCollection,
-			TargetCollection: c.LambdaDB.Collection,
-			Cursor:           cursorValue,
-			AcceptedRecords:  accepted,
-			UpdatedAt:        time.Now().UTC(),
+			SourceKind:        c.SourceKind,
+			SourceCollection:  c.SourceCollection,
+			TargetCollection:  c.LambdaDB.Collection,
+			Cursor:            cursorValue,
+			AcceptedRecords:   accepted,
+			SourceDone:        sourceDone,
+			ValidationSamples: samples,
+			UpdatedAt:         time.Now().UTC(),
 		}); err != nil {
 			return err
 		}

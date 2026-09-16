@@ -671,7 +671,7 @@ func (m *lambdaDBMock) handle(w http.ResponseWriter, r *http.Request) {
 		m.mu.Unlock()
 		if exists {
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"collectionName":"` + m.collection + `","numDocs":0,"collectionStatus":"ACTIVE","createdAt":1700000000,"updatedAt":1700000000,"dataUpdatedAt":1700000000}`))
+			_, _ = w.Write([]byte(`{"collection":{"projectName":"` + m.project + `","collectionName":"` + m.collection + `","indexConfigs":{},"description":"","tags":{},"numPartitions":1,"numDocs":0,"defaultBranchName":"main","snapshotRetentionInDays":7,"createdAt":1700000000000,"updatedAt":1700000000000}}`))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -686,8 +686,8 @@ func (m *lambdaDBMock) handle(w http.ResponseWriter, r *http.Request) {
 		m.created = append(m.created, body)
 		m.exists = true
 		m.mu.Unlock()
-		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write([]byte(`{"collection":{"collectionName":"` + m.collection + `","numDocs":0,"collectionStatus":"ACTIVE","createdAt":1700000000,"updatedAt":1700000000,"dataUpdatedAt":1700000000}}`))
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"collection":{"collectionName":"` + m.collection + `","description":"","tags":{},"defaultBranchName":"main","snapshotRetentionInDays":7,"createdAt":1700000000000}}`))
 	case r.Method == http.MethodPost && r.URL.Path == path.Join(collectionPath, "docs", "upsert"):
 		m.mu.Lock()
 		m.writeAttemptCount++

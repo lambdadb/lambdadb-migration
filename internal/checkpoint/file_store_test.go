@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -82,5 +83,39 @@ func TestFileStoreLoadPreservesLargeNumericCursor(t *testing.T) {
 	}
 	if got, want := num.String(), "18446744073709551615"; got != want {
 		t.Fatalf("cursor num = %q, want %q", got, want)
+	}
+}
+
+func TestFileStoreRestrictsSamplePermissions(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		name := "new"
+		if existing {
+			name = "existing"
+		}
+		t.Run(name, func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("POSIX file permissions")
+			}
+			store := NewFileStore(t.TempDir())
+			path := store.path("sample")
+			if existing {
+				if err := os.WriteFile(path, []byte(`{}`), 0644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(path, 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := store.Save(context.Background(), "sample", Checkpoint{SourceDone: true, ValidationSamples: []map[string]any{{"id": "1", "private": "sample"}}}); err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode().Perm() != 0600 {
+				t.Fatalf("checkpoint permissions = %o, want 600", info.Mode().Perm())
+			}
+		})
 	}
 }
