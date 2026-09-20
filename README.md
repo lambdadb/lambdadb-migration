@@ -54,6 +54,38 @@ less install.sh
 sh install.sh
 ```
 
+## Homebrew
+
+Install stable `v0.1.6` from the
+[public LambdaDB tap](https://github.com/lambdadb/homebrew-tap):
+
+```sh
+brew install lambdadb/tap/lambdadb-migration
+lambdadb-migration --version
+```
+
+Update an existing installation:
+
+```sh
+brew update
+brew upgrade lambdadb/tap/lambdadb-migration
+```
+
+Uninstall:
+
+```sh
+brew uninstall lambdadb/tap/lambdadb-migration
+```
+
+The formula uses the existing release binaries and requires no separate Go or
+Node installation. Before switching from `install.sh`, inspect
+`type -a lambdadb-migration` and preserve any existing executable; never
+force-overwrite it or run the standalone installer over a Homebrew-managed path.
+See [Homebrew installation and maintenance](docs/homebrew.md) for migration
+between installers, verification, platform coverage and the manual tap update
+procedure. Public installation was verified on macOS arm64 and Linux amd64;
+macOS amd64 and Linux arm64 archives have checksum/header verification only.
+
 ## Qdrant To LambdaDB
 
 Set your LambdaDB connection values from the LambdaDB Cloud console. LambdaDB Cloud uses region-specific API base URLs, so do not assume a global default URL or a fixed project name.
