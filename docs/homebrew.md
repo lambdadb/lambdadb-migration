@@ -19,8 +19,18 @@ lambdadb-migration --help
 lambdadb-migration qdrant --help
 lambdadb-migration pinecone --help
 lambdadb-migration elasticsearch --help
+```
+
+Update an existing installation:
+
+```sh
 brew update
 brew upgrade lambdadb/tap/lambdadb-migration
+```
+
+Uninstall:
+
+```sh
 brew uninstall lambdadb/tap/lambdadb-migration
 ```
 

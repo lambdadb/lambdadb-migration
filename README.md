@@ -62,8 +62,18 @@ Install stable `v0.1.6` from the
 ```sh
 brew install lambdadb/tap/lambdadb-migration
 lambdadb-migration --version
+```
+
+Update an existing installation:
+
+```sh
 brew update
 brew upgrade lambdadb/tap/lambdadb-migration
+```
+
+Uninstall:
+
+```sh
 brew uninstall lambdadb/tap/lambdadb-migration
 ```
 
