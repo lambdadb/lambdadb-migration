@@ -1,16 +1,16 @@
 # Homebrew installation and maintenance
 
-## Availability gate
+## Availability
 
-Homebrew support for the existing stable `v0.1.6` is being prepared in the public
-[LambdaDB tap](https://github.com/lambdadb/homebrew-tap). It is **not yet verified
-as publicly installable**. Merge the tap PR first, verify installation from the
-actual public tap on macOS/Linux, then finalize this page and the README before
-merging the migration documentation PR. No new migration release is required.
+The public [LambdaDB tap](https://github.com/lambdadb/homebrew-tap) provides stable
+`v0.1.6` using the existing release binaries. The tap PR merged on 2026-09-20;
+public installation was verified on macOS arm64 and Linux amd64. macOS amd64
+and Linux arm64 archives are included and checksum/header-verified, but have
+not yet been executed in our installation checks. See the evidence below.
 
-## Consumer commands after publication
+## Consumer commands
 
-With Homebrew installed, macOS/Linux amd64/arm64 consumers will use:
+With Homebrew installed:
 
 ```sh
 brew install lambdadb/tap/lambdadb-migration
@@ -65,8 +65,7 @@ Use `brew upgrade`/`brew uninstall` for Homebrew-managed installations.
 
 The tap owns the formula, tests and checksum verifier; do not keep a second
 formula copy here. See its
-[migration maintenance guide](https://github.com/lambdadb/homebrew-tap/blob/main/MIGRATION.md)
-once the tap PR merges.
+[migration maintenance guide](https://github.com/lambdadb/homebrew-tap/blob/main/MIGRATION.md).
 
 1. Publish and verify a stable migration release using the existing GoReleaser
    process. Confirm macOS/Linux amd64/arm64 archives and `checksums.txt`.
@@ -91,3 +90,25 @@ The tap deliberately maintains its own formula and `brew test` contract; current
 casks can support Linux too. See the tap guide for this choice and the separate
 `homebrew/core` acceptance rules. Do not copy old `brews` automation or add
 quarantine-removal hooks.
+
+## Public installation verification
+
+On 2026-09-20, tap [PR #1](https://github.com/lambdadb/homebrew-tap/pull/1) merged
+as `f2f2f43c2b6ce9f7197e537428a509a67be75971` with the reviewed formula unchanged.
+
+- Local macOS arm64 / Homebrew 6.0.17: public-tap installation, exact formula
+  equality, style, version, root and all source/inventory help, offline invalid-URL
+  rejection and execution without Go/Node passed. The exact consumer command
+  above was also exercised in a separate fresh installation.
+- macOS arm64 and Linux amd64: the [post-merge main workflow](https://github.com/lambdadb/homebrew-tap/actions/runs/35492626489)
+  passed public `remote` installation of both migration and the existing CLI
+  (attempt 2).
+- The initial macOS CI attempt hit GitHub's unauthenticated metadata API rate
+  limit before installation; the failed job passed on retry without a formula
+  change. A tap follow-up addresses verifier authentication to prevent recurrence.
+- The installed version was `0.1.6 (7256838f000e7058a5264e83723f83fd4e575f88)`.
+  Test installations/taps were removed; existing packages, taps, user files and
+  `.env.local` were preserved. No service writes or security bypasses were used.
+- All four released archives passed checksum and architecture-header checks.
+  macOS amd64/Linux arm64 execution and upgrades between distinct versions remain
+  unverified. No new migration release was published for Homebrew registration.
