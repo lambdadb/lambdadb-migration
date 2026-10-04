@@ -75,9 +75,11 @@ func buildPayloadIndexConfig(index map[string]any) (components.IndexConfigsUnion
 	case "sparseVector":
 		return components.CreateIndexConfigsUnionSparseVector(components.IndexConfigs{}), nil
 	case "text":
-		return components.CreateIndexConfigsUnionText(components.IndexConfigsText{
-			Analyzers: parseAnalyzers(index["analyzers"]),
-		}), nil
+		analyzers, err := config.ParseTextIndexAnalyzers(index)
+		if err != nil {
+			return components.IndexConfigsUnion{}, err
+		}
+		return components.CreateIndexConfigsUnionText(components.IndexConfigsText{Analyzers: analyzers}), nil
 	case "object":
 		return components.CreateIndexConfigsUnionObject(components.IndexConfigsObject{
 			ObjectIndexConfigs: map[string]any{},
@@ -87,38 +89,4 @@ func buildPayloadIndexConfig(index map[string]any) (components.IndexConfigsUnion
 	default:
 		return components.IndexConfigsUnion{}, fmt.Errorf("unsupported index type %q", typ)
 	}
-}
-
-func parseAnalyzers(value any) []components.Analyzer {
-	if value == nil {
-		return nil
-	}
-	var raw []string
-	switch v := value.(type) {
-	case []string:
-		raw = v
-	case []any:
-		for _, item := range v {
-			if s, ok := item.(string); ok {
-				raw = append(raw, s)
-			}
-		}
-	default:
-		return nil
-	}
-
-	analyzers := make([]components.Analyzer, 0, len(raw))
-	for _, name := range raw {
-		switch name {
-		case "standard":
-			analyzers = append(analyzers, components.AnalyzerStandard)
-		case "english":
-			analyzers = append(analyzers, components.AnalyzerEnglish)
-		case "korean":
-			analyzers = append(analyzers, components.AnalyzerKorean)
-		case "japanese":
-			analyzers = append(analyzers, components.AnalyzerJapanese)
-		}
-	}
-	return analyzers
 }

@@ -45,8 +45,9 @@ type SparseVectorField struct {
 }
 
 type PayloadIndex struct {
-	Name string `json:"name" yaml:"name"`
-	Type string `json:"type" yaml:"type"`
+	Analyzers []string `json:"analyzers,omitempty" yaml:"analyzers,omitempty"`
+	Name      string   `json:"name" yaml:"name"`
+	Type      string   `json:"type" yaml:"type"`
 }
 
 type Source interface {

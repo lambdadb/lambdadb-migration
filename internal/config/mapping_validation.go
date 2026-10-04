@@ -156,36 +156,10 @@ func validatePayloadMapping(inv *source.Inventory, payload PayloadMapping, field
 			errs = append(errs, fmt.Errorf("payload field %q has unsupported index type %q", field, typ))
 		}
 		if typ == "text" {
-			errs = append(errs, validateTextAnalyzers(field, index["analyzers"])...)
-		}
-	}
-	return errs
-}
-
-func validateTextAnalyzers(field string, value any) []error {
-	var errs []error
-	switch analyzers := value.(type) {
-	case nil:
-		return nil
-	case []string:
-		for _, analyzer := range analyzers {
-			if !isSupportedAnalyzer(analyzer) {
-				errs = append(errs, fmt.Errorf("payload field %q has unsupported analyzer %q", field, analyzer))
+			if _, err := ParseTextIndexAnalyzers(index); err != nil {
+				errs = append(errs, fmt.Errorf("payload field %q has %w", field, err))
 			}
 		}
-	case []any:
-		for _, raw := range analyzers {
-			analyzer, ok := raw.(string)
-			if !ok {
-				errs = append(errs, fmt.Errorf("payload field %q has non-string analyzer %v", field, raw))
-				continue
-			}
-			if !isSupportedAnalyzer(analyzer) {
-				errs = append(errs, fmt.Errorf("payload field %q has unsupported analyzer %q", field, analyzer))
-			}
-		}
-	default:
-		errs = append(errs, fmt.Errorf("payload field %q analyzers must be a string array", field))
 	}
 	return errs
 }
@@ -202,15 +176,6 @@ func isSupportedSimilarity(value string) bool {
 func isSupportedPayloadIndexType(value string) bool {
 	switch value {
 	case "keyword", "long", "double", "datetime", "boolean", "sparseVector", "text", "object":
-		return true
-	default:
-		return false
-	}
-}
-
-func isSupportedAnalyzer(value string) bool {
-	switch value {
-	case "standard", "english", "korean", "japanese":
 		return true
 	default:
 		return false

@@ -42,6 +42,9 @@ func (s *Source) Inventory(ctx context.Context) (*source.Inventory, error) {
 			Name: name,
 			Type: mapPayloadType(schema.GetDataType()),
 		}
+		if schema.GetDataType() == qdrantapi.PayloadSchemaType_Text {
+			inv.Warnings = append(inv.Warnings, fmt.Sprintf("Qdrant text index %q tokenizer/options are not translated; generated mapping uses LambdaDB standard unless edited", name))
+		}
 		normalized := config.NormalizeFieldName(name)
 		if normalized != name {
 			inv.Warnings = append(inv.Warnings, fmt.Sprintf("payload field %q contains '.', suggested LambdaDB field name is %q", name, normalized))
