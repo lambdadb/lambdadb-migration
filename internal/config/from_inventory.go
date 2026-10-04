@@ -40,6 +40,9 @@ func MappingFromInventory(inv *source.Inventory, targetCollection string) Mappin
 		mapping.Payload.IndexConfigs[targetName] = map[string]any{
 			"type": index.Type,
 		}
+		if index.Analyzers != nil {
+			mapping.Payload.IndexConfigs[targetName]["analyzers"] = append([]string{}, index.Analyzers...)
+		}
 	}
 	return mapping
 }

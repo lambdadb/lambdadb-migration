@@ -41,7 +41,15 @@ func (s *Source) Inventory(ctx context.Context) (*source.Inventory, error) {
 	if len(indexNames) > 1 {
 		inv.Warnings = append(inv.Warnings, fmt.Sprintf("mapping request returned %d indexes; using %q for generated mapping", len(indexNames), indexNames[0]))
 	}
-	walkProperties(inv, "", mappings[indexNames[0]].Mappings.Properties)
+	var settings settingsResponse
+	if err := s.do(ctx, http.MethodGet, "/"+pathEscape(indexNames[0])+"/_settings", nil, &settings); err != nil {
+		return nil, fmt.Errorf("get elasticsearch analyzer settings: %w", err)
+	}
+	selected, ok := settings[indexNames[0]]
+	if !ok {
+		return nil, fmt.Errorf("elasticsearch settings response omitted index %q", indexNames[0])
+	}
+	walkProperties(inv, "", mappings[indexNames[0]].Mappings.Properties, selected.Settings.Index.Analysis.Analyzer)
 	if len(inv.Vectors) == 0 {
 		inv.Warnings = append(inv.Warnings, "source index does not expose dense_vector fields")
 	}
@@ -53,7 +61,7 @@ func (s *Source) Inventory(ctx context.Context) (*source.Inventory, error) {
 	return inv, nil
 }
 
-func walkProperties(inv *source.Inventory, prefix string, properties map[string]fieldMapping) {
+func walkProperties(inv *source.Inventory, prefix string, properties map[string]fieldMapping, definitions map[string]map[string]any) {
 	names := make([]string, 0, len(properties))
 	for name := range properties {
 		names = append(names, name)
@@ -66,7 +74,7 @@ func walkProperties(inv *source.Inventory, prefix string, properties map[string]
 			path = prefix + "." + name
 		}
 		if field.Type == "" && len(field.Properties) > 0 {
-			walkProperties(inv, path, field.Properties)
+			walkProperties(inv, path, field.Properties, definitions)
 			continue
 		}
 		switch field.Type {
@@ -80,7 +88,8 @@ func walkProperties(inv *source.Inventory, prefix string, properties map[string]
 				Similarity: mapSimilarity(field.Similarity),
 			}
 		case "text":
-			inv.PayloadIndexes[path] = source.PayloadIndex{Name: path, Type: "text"}
+			analyzers := fieldAnalyzers(inv, path, field, definitions)
+			inv.PayloadIndexes[path] = source.PayloadIndex{Name: path, Type: "text", Analyzers: analyzers}
 		case "keyword", "constant_keyword", "wildcard":
 			inv.PayloadIndexes[path] = source.PayloadIndex{Name: path, Type: "keyword"}
 		case "long", "integer", "short", "byte", "unsigned_long":
@@ -93,7 +102,7 @@ func walkProperties(inv *source.Inventory, prefix string, properties map[string]
 			inv.PayloadIndexes[path] = source.PayloadIndex{Name: path, Type: "boolean"}
 		case "object":
 			if len(field.Properties) > 0 {
-				walkProperties(inv, path, field.Properties)
+				walkProperties(inv, path, field.Properties, definitions)
 			} else {
 				inv.PayloadIndexes[path] = source.PayloadIndex{Name: path, Type: "object"}
 			}
@@ -141,6 +150,9 @@ func cloneInventory(inv *source.Inventory) *source.Inventory {
 	}
 	out.PayloadIndexes = make(map[string]source.PayloadIndex, len(inv.PayloadIndexes))
 	for key, value := range inv.PayloadIndexes {
+		if value.Analyzers != nil {
+			value.Analyzers = append([]string{}, value.Analyzers...)
+		}
 		out.PayloadIndexes[key] = value
 	}
 	out.Warnings = append([]string(nil), inv.Warnings...)
@@ -158,10 +170,12 @@ type typeMapping struct {
 }
 
 type fieldMapping struct {
-	Type       string                  `json:"type"`
-	Dimensions int64                   `json:"dims"`
-	Similarity string                  `json:"similarity"`
-	Analyzer   string                  `json:"analyzer"`
-	Properties map[string]fieldMapping `json:"properties"`
-	Fields     map[string]fieldMapping `json:"fields"`
+	Type                string                  `json:"type"`
+	Dimensions          int64                   `json:"dims"`
+	Similarity          string                  `json:"similarity"`
+	SearchAnalyzer      string                  `json:"search_analyzer"`
+	SearchQuoteAnalyzer string                  `json:"search_quote_analyzer"`
+	Analyzer            string                  `json:"analyzer"`
+	Properties          map[string]fieldMapping `json:"properties"`
+	Fields              map[string]fieldMapping `json:"fields"`
 }

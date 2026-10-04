@@ -245,6 +245,73 @@ The Elasticsearch connector inventories index mappings, maps supported scalar fi
 
 Elasticsearch point-in-time IDs can expire. If a resumed migration fails because the saved PIT is no longer valid, rerun the migration with `--migration.restart`.
 
+## Text Analyzer Mappings
+
+Text indexes support the 49 fixed presets from LambdaDB server merge
+`55d888299fee44466326a9db8016af9811ade13b` (PR #437), using Go SDK v0.6.0
+(tag commit `94ca86dba71c96fbb858bb731876651850ee1928`):
+
+```text
+standard english korean japanese arabic chinese cjk french german hindi
+indonesian italian portuguese russian spanish turkish armenian basque bengali
+brazilian bulgarian catalan czech danish dutch estonian finnish galician greek
+hungarian irish latvian lithuanian norwegian persian romanian serbian sorani
+swedish thai simple whitespace stop keyword pattern fingerprint nepali tamil telugu
+```
+
+For example, edit an inventory mapping to include:
+
+```yaml
+payload:
+  indexConfigs:
+    title:
+      type: text
+      analyzers: [french, german]
+    raw_title:
+      type: text
+      analyzers: [keyword]
+    category:
+      type: keyword
+```
+
+Names are case-sensitive; order and duplicates are preserved. Omitted/null
+`analyzers` uses the server default `[standard]`; an explicit `[]` remains empty.
+The `keyword` analyzer is a text preset, distinct from the `keyword` field type.
+Unknown names, non-string values, custom pipelines and text index options beyond
+`type`/`analyzers` are rejected by mapping validation and target schema creation.
+
+Elasticsearch inventory reads both `/_mapping` and `/_settings`; the source
+credentials must permit both reads. It preserves unmodified supported field
+analyzers and resolves an index default or named alias containing only a built-in
+`type` to that fixed preset. Without a configured default it leaves analyzers
+omitted; an explicit field `analyzer: default` resolves to `standard`.
+Custom/configured definitions and unsupported names produce a warning and an
+`unsupported:<source-name>` analyzer marker. Generated mappings fail validation
+until explicitly edited; a reviewed manual mapping can select a fixed preset
+without silently assuming the custom source analysis is equivalent.
+Field `search_analyzer`, `search_quote_analyzer` and index `default_search`
+settings are reported as warnings and are not translated. Multi-fields retain
+an explicit warning. Migration runs, including dry-runs, print inventory warnings
+to stderr. Review these differences before migrating.
+
+The field/index default precedence follows the
+[Elasticsearch analyzer contract](https://www.elastic.co/guide/en/elasticsearch/reference/8.19/specify-analyzer.html).
+Preset names do not promise identical tokenization across engines or versions.
+Nepali/Tamil/Telugu are LambdaDB Lucene extensions, not shared Elasticsearch or
+OpenSearch presets. Plugin analyzers require manual review; Korean/Japanese/Chinese
+LambdaDB names are not treated as shared built-in source names. This repository
+has an Elasticsearch connector, not a separate OpenSearch adapter; OpenSearch
+compatibility is not established by this change.
+
+Qdrant text tokenizer/options are reported as untranslated; generated text indexes
+use LambdaDB standard unless the mapping is edited. Pinecone metadata indexes
+remain unintrospected with the existing warning. Neither source supplies analyzer
+presets that can be assumed equivalent to LambdaDB.
+
+Dense/sparse query-overlap verification remains ordinary retrieval and never adds
+reranking. SDK publication and server source commits do not establish deployment:
+confirm the intended target supports these presets before an actual migration.
+
 ## Common Options
 
 `inventory qdrant`, `inventory pinecone`, and `inventory elasticsearch` write YAML for `.yaml`/`.yml` outputs and JSON otherwise. `--mapping-file` accepts either JSON or YAML, as a direct mapping object or as the wrapped output produced by an inventory command.
@@ -266,7 +333,7 @@ Useful migration safety flags:
 
 Generated inventory mappings set `target.createCollection: true` by default, so the migration creates the LambdaDB collection when it is missing. Use `--migration.create-collection=false` to require the target collection to exist, or `--migration.create-collection=true` to override a mapping file that has collection creation disabled.
 
-The target uses LambdaDB Go SDK `v0.4.0`. Collection creation returns HTTP 201 with collection metadata; the current API has no `collectionStatus` readiness field to poll. Transient write errors use the configured retry policy. Bulk uploads forward the signed headers returned by LambdaDB (including `If-None-Match: *`) and send `Content-Type: application/json`. A retried upload obtains a fresh URL; checkpoints advance only after every write for a source batch succeeds.
+The target uses LambdaDB Go SDK `v0.6.0`. Collection creation returns HTTP 201 with collection metadata; the current API has no `collectionStatus` readiness field to poll. Transient write errors use the configured retry policy. Bulk uploads forward the signed headers returned by LambdaDB (including `If-None-Match: *`) and send `Content-Type: application/json`. A retried upload obtains a fresh URL; checkpoints advance only after every write for a source batch succeeds.
 
 Checkpoints record source exhaustion separately from validation success. Re-running a completed checkpoint skips source reads and writes, while requested validation and cleanup still run. Validation-enabled migrations retain up to `--migration.validation-sample-size` sample documents in the local checkpoint so failed validation can be retried without re-uploading; checkpoint files use owner-only permissions. If a completed checkpoint has no saved samples, requesting sample validation requires `--migration.restart` (or sample size `0` for count-only validation).
 

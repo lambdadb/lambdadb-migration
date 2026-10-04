@@ -10,6 +10,9 @@ import (
 
 func TestInventoryMapsElasticsearchFields(t *testing.T) {
 	server := newTestServer(t, map[string]handlerFunc{
+		"GET /articles/_settings": func(t *testing.T, w responseWriter, r request) {
+			writeJSON(t, w, map[string]any{"articles": map[string]any{"settings": map[string]any{"index": map[string]any{}}}})
+		},
 		"GET /articles/_mapping": func(t *testing.T, w responseWriter, r request) {
 			writeJSON(t, w, map[string]any{
 				"articles": map[string]any{

@@ -69,6 +69,10 @@ func runMigration(ctx context.Context, c migrationRunConfig) error {
 		return err
 	}
 
+	for _, warning := range inv.Warnings {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
+	}
+
 	mapping, err := loadMapping(c.MappingFile, inv, c.LambdaDB.Collection)
 	if err != nil {
 		return err
