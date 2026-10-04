@@ -16,6 +16,9 @@ func TestInventoryPreservesAnalyzerSettings(t *testing.T) {
 		warnings                                bool
 	}{
 		{"omitted", `{}`, `{}`, "", "", false},
+		{"explicit implicit default", `{"analyzer":"default"}`, `{}`, "standard", "", false},
+		{"explicit configured default", `{"analyzer":"default"}`, `{"default":{"type":"french"}}`, "french", "", false},
+		{"explicit custom default", `{"analyzer":"default"}`, `{"default":{"type":"standard","max_token_length":"10"}}`, "", "custom or configured options", false},
 		{"explicit", `{"analyzer":"german"}`, `{}`, "german", "", false},
 		{"keyword analyzer", `{"analyzer":"keyword"}`, `{}`, "keyword", "", false},
 		{"index default", `{}`, `{"default":{"type":"french"}}`, "french", "", false},

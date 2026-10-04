@@ -25,6 +25,9 @@ func resolveAnalyzer(name string, definitions map[string]map[string]any) (string
 			return "", fmt.Errorf("analyzer %q has custom or configured options; choose a fixed LambdaDB preset explicitly", name)
 		}
 		name = typ
+	} else if name == "default" {
+		// Elasticsearch registers standard as default when no index definition exists.
+		name = "standard"
 	}
 	analyzer := components.Analyzer(name)
 	if !analyzer.IsExact() {

@@ -284,7 +284,8 @@ Elasticsearch inventory reads both `/_mapping` and `/_settings`; the source
 credentials must permit both reads. It preserves unmodified supported field
 analyzers and resolves an index default or named alias containing only a built-in
 `type` to that fixed preset. Without a configured default it leaves analyzers
-omitted. Custom/configured definitions and unsupported names produce a warning and an
+omitted; an explicit field `analyzer: default` resolves to `standard`.
+Custom/configured definitions and unsupported names produce a warning and an
 `unsupported:<source-name>` analyzer marker. Generated mappings fail validation
 until explicitly edited; a reviewed manual mapping can select a fixed preset
 without silently assuming the custom source analysis is equivalent.
