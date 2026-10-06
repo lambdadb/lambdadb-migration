@@ -170,6 +170,9 @@ func TestSDKUpgradeVerificationSearchWire(t *testing.T) {
 				if _, ok := body["rerank"]; ok {
 					t.Error("migration verification must not rerank")
 				}
+				if _, ok := body["candidateSize"]; ok {
+					t.Error("ordinary migration verification must omit candidateSize")
+				}
 				if string(body["size"]) != "2" || string(body["consistentRead"]) != "true" {
 					t.Errorf("changed query defaults: %v", body)
 				}
