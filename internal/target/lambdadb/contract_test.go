@@ -3,6 +3,7 @@ package lambdadb
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/lambdadb/go-lambdadb/models/apierrors"
 	"github.com/lambdadb/lambdadb-migration/internal/config"
 )
 
@@ -197,6 +199,14 @@ func TestBulkWriteContract(t *testing.T) {
 			err := newContractTarget(api.URL, config.WriteModeBulk).Write(context.Background(), docs)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("Write() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.completionFailure == http.StatusBadRequest {
+				// Native embedding collections reject bulk upsert on the server.
+				// Preserve the error type and do not retry or rewrite documents.
+				var badRequest *apierrors.BadRequestError
+				if !errors.As(err, &badRequest) {
+					t.Fatalf("completion rejection = %T %v", err, err)
+				}
 			}
 			mu.Lock()
 			defer mu.Unlock()

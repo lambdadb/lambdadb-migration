@@ -160,6 +160,11 @@ func validatePayloadMapping(inv *source.Inventory, payload PayloadMapping, field
 				errs = append(errs, fmt.Errorf("payload field %q has %w", field, err))
 			}
 		}
+		if typ == "vector" {
+			if _, err := ParseEmbeddingIndexConfig(index); err != nil {
+				errs = append(errs, fmt.Errorf("payload field %q has %w", field, err))
+			}
+		}
 	}
 	return errs
 }
@@ -175,7 +180,7 @@ func isSupportedSimilarity(value string) bool {
 
 func isSupportedPayloadIndexType(value string) bool {
 	switch value {
-	case "keyword", "long", "double", "datetime", "boolean", "sparseVector", "text", "object":
+	case "keyword", "long", "double", "datetime", "boolean", "sparseVector", "text", "object", "vector":
 		return true
 	default:
 		return false

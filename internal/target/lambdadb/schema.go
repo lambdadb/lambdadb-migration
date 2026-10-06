@@ -62,6 +62,8 @@ func mapSimilarity(value string) (components.Similarity, error) {
 func buildPayloadIndexConfig(index map[string]any) (components.IndexConfigsUnion, error) {
 	typ, _ := index["type"].(string)
 	switch typ {
+	case "vector":
+		return config.ParseEmbeddingIndexConfig(index)
 	case "keyword":
 		return components.CreateIndexConfigsUnionKeyword(components.IndexConfigs{}), nil
 	case "long":
