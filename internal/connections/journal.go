@@ -50,7 +50,18 @@ func OpenJournal(path, fingerprint string, initialize bool) (*Journal, error) {
 		} else {
 			flags &^= os.O_CREATE
 		}
-		return os.OpenFile(name, flags, mode)
+		f, err := os.OpenFile(name, flags, mode)
+		if err != nil {
+			return nil, err
+		}
+		if !initialize {
+			info, e := f.Stat()
+			if e != nil || info.Size() == 0 {
+				_ = f.Close()
+				return nil, errors.New("regional state file is empty or unreadable")
+			}
+		}
+		return f, nil
 	}}
 	db, err := bolt.Open(path, 0600, options)
 	if err != nil {

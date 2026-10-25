@@ -487,3 +487,27 @@ acknowledgment and redirect behavior. HTTP transport fixtures prove the client
 contract, not deployed engine support; durable ordering is independently tested
 in the engine's EfsBranchWal/WriterMutationCommitter tests. No new ordered API was
 deployed to the Seoul endpoint by these changes.
+
+## Capture without target generation management
+
+`postgrescdc.Capture` separates PostgreSQL execution from target generation/search
+behavior. Explicit `Initialize` persists a complete exported snapshot and owns a
+connection-derived slot; `Resume` requires the retained checkpoint and never starts
+a new baseline. `Stream` reuses pgoutput row/TOAST/PK reconstruction, checks mapping
+continuity, and invokes durable target acceptance before saving rows/LSN and sending
+source feedback. It has no central backend calls, collection creation or readback.
+Requested columns must match the publication before a slot is created.
+
+`Disconnect` removes only a durably owned, inactive pgoutput slot after source
+identity/configuration checks; it leaves the customer's publication/table intact.
+The managed restart open path for both source state and the common intent journal
+refuses missing or empty/truncated files. An initialized but absent source checkpoint
+cannot be treated as a new snapshot by `Resume`. An offset alone cannot restore row
+reconstruction state.
+
+Tests prove retained-baseline restart, pending WAL replay, target rejection before
+checkpoint advance, selected-column TOAST/PK changes and owned slot cleanup. This
+is still a source adapter and common journal/transport, not a completed managed
+worker deployment. Idle unrelated database WAL and outage slot-retention limits
+need operational monitoring; this bounded capture only acknowledges processed,
+durably accepted source positions, never a keepalive's advertised WAL end.

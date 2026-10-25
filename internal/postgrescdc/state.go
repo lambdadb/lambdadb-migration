@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -73,8 +74,28 @@ func (s *Store) saveBootstrap(b bootstrap) error {
 	})
 }
 
-func OpenStore(path string) (*Store, error) {
-	db, err := bolt.Open(path, 0600, &bolt.Options{Timeout: 100 * time.Millisecond})
+func OpenStore(path string) (*Store, error) { return openStore(path, true) }
+
+// OpenExistingStore is the managed runner restart path. Missing source row state
+// cannot be reconstructed from a checkpoint alone and must never be auto-created.
+func OpenExistingStore(path string) (*Store, error) { return openStore(path, false) }
+func openStore(path string, create bool) (*Store, error) {
+	options := &bolt.Options{Timeout: 100 * time.Millisecond}
+	if !create {
+		options.OpenFile = func(name string, flags int, mode os.FileMode) (*os.File, error) {
+			f, err := os.OpenFile(name, flags&^os.O_CREATE, mode)
+			if err != nil {
+				return nil, err
+			}
+			info, err := f.Stat()
+			if err != nil || info.Size() == 0 {
+				_ = f.Close()
+				return nil, errors.New("source state file is empty or unreadable")
+			}
+			return f, nil
+		}
+	}
+	db, err := bolt.Open(path, 0600, options)
 	if err != nil {
 		return nil, fmt.Errorf("open regional state (exclusive ownership required): %w", err)
 	}

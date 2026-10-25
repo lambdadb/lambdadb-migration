@@ -166,3 +166,17 @@ func TestJournalSurvivesRealProcessDeathBeforeAndAfterAcceptance(t *testing.T) {
 		})
 	}
 }
+
+func TestTruncatedJournalIsNotInitializedOnRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "connection.db")
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenJournal(path, "binding", false); err == nil {
+		t.Fatal("truncated journal initialized")
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Size() != 0 {
+		t.Fatal("failed restart modified truncated journal")
+	}
+}
