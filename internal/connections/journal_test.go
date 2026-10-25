@@ -180,3 +180,70 @@ func TestTruncatedJournalIsNotInitializedOnRestart(t *testing.T) {
 		t.Fatal("failed restart modified truncated journal")
 	}
 }
+
+func TestManagedInventorySurvivesPartialSourceCheckpointAndPendingRecovery(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	j, err := OpenJournal(path, "binding", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = j.SaveData(json.RawMessage(`{"source_checkpoint":"before-new-row"}`)); err != nil {
+		t.Fatal(err)
+	}
+	first, err := j.Prepare("upsert", json.RawMessage(`{"docs":[{"id":"old","title":"before"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = j.Accept(*first); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := j.Prepare("upsert", json.RawMessage(`{"docs":[{"id":"partial","title":"not-in-source-checkpoint"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := j.Load()
+	if before.ManagedIDs["partial"] {
+		t.Fatal("unacknowledged document certified as accepted")
+	}
+	_ = j.Close()
+	j, err = OpenJournal(path, "binding", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	if err = j.Accept(*pending); err != nil {
+		t.Fatal(err)
+	}
+	state, err := j.Load()
+	if err != nil || !state.ManagedIDs["old"] || !state.ManagedIDs["partial"] || string(state.Data) != `{"source_checkpoint":"before-new-row"}` {
+		t.Fatal("partial target row was lost from resync ownership inventory", err)
+	}
+	removal, err := j.Prepare("delete", json.RawMessage(`{"ids":["partial"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = j.Accept(*removal); err != nil {
+		t.Fatal(err)
+	}
+	state, _ = j.Load()
+	if len(state.ManagedIDs) != 1 || !state.ManagedIDs["old"] {
+		t.Fatal("accepted delete did not update inventory atomically")
+	}
+}
+
+func TestJournalRejectsUntrackableIntentBeforeNetworkSend(t *testing.T) {
+	j, err := OpenJournal(filepath.Join(t.TempDir(), "state.db"), "binding", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	for _, invalid := range []struct{ op, body string }{{"upsert", `{"docs":[{"id":1}]}`}, {"upsert", `{"docs":[{"id":"one"},{"id":"two"}]}`}, {"delete", `{"ids":["one","two"]}`}, {"delete", `{"ids":["one"],"docs":null}`}} {
+		if _, err = j.Prepare(invalid.op, json.RawMessage(invalid.body)); err == nil {
+			t.Fatal("untrackable intent accepted", invalid.body)
+		}
+	}
+	state, err := j.Load()
+	if err != nil || state.Pending != nil || state.AcceptedSequence != 0 || len(state.ManagedIDs) != 0 {
+		t.Fatal("rejected intent changed regional state")
+	}
+}

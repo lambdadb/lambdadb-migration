@@ -511,3 +511,26 @@ is still a source adapter and common journal/transport, not a completed managed
 worker deployment. Idle unrelated database WAL and outage slot-retention limits
 need operational monitoring; this bounded capture only acknowledges processed,
 durably accepted source positions, never a keepalive's advertised WAL end.
+
+## Managed document ownership during partial application
+
+Common journal format 2 records a bounded set of managed document IDs atomically
+with each accepted intent. It supports one document per upsert/delete intent in
+this first delivery. A pending operation is not certified as accepted until its
+matching target receipt; recovery accepts the same intent and updates ownership
+in the same local transaction. Rejected payloads cannot advance either sequence
+or ownership. The inventory remains regional and contains no credentials.
+
+This inventory is necessary for same-collection resync: a partially applied source
+transaction can add a target row before the source row/LSN checkpoint advances.
+A fresh source cut must be able to delete that row if it no longer exists, even
+though it is absent from the older source checkpoint. Keep managed IDs across
+restart, recover pending intent first, and reconcile deletions before insertions.
+Customer-created IDs are not silently adopted into this inventory; arbitrary
+customer writes remain outside the first delivery's conflict guarantees.
+
+Older development journal formats are rejected explicitly. Do not initialize a
+new journal to repair a missing one or attach it to an existing producer/target.
+This is a local format change before worker rollout, not an in-place migration of
+an operating deployment. The existing 10,000 managed-row / 32 MiB journal budgets
+remain explicit limits of the correctness implementation.

@@ -15,6 +15,8 @@ import (
 )
 
 const MaxStateBytes = 32 << 20
+const MaxManagedRows = 10000
+const journalFormat = 2
 
 var ErrPending = errors.New("a durable target intent must be recovered first")
 
@@ -25,10 +27,11 @@ type Intent struct {
 	Digest    string          `json:"digest"`
 }
 type State struct {
-	Format           int     `json:"format"`
-	Fingerprint      string  `json:"fingerprint"`
-	AcceptedSequence uint64  `json:"accepted_sequence"`
-	Pending          *Intent `json:"pending,omitempty"`
+	Format           int             `json:"format"`
+	Fingerprint      string          `json:"fingerprint"`
+	AcceptedSequence uint64          `json:"accepted_sequence"`
+	Pending          *Intent         `json:"pending,omitempty"`
+	ManagedIDs       map[string]bool `json:"managed_ids"`
 	// Source and lifecycle state is opaque to this common journal. Credentials must
 	// never be stored here; approved configuration contains regional references only.
 	Data json.RawMessage `json:"data"`
@@ -74,7 +77,7 @@ func OpenJournal(path, fingerprint string, initialize bool) (*Journal, error) {
 			if e != nil {
 				return e
 			}
-			raw, _ := json.Marshal(State{Format: 1, Fingerprint: fingerprint, Data: json.RawMessage(`{}`)})
+			raw, _ := json.Marshal(State{Format: journalFormat, Fingerprint: fingerprint, ManagedIDs: map[string]bool{}, Data: json.RawMessage(`{}`)})
 			return b.Put([]byte("state"), raw)
 		})
 	}
@@ -98,8 +101,13 @@ func (j *Journal) decode(tx *bolt.Tx) (*State, error) {
 		return nil, errors.New("invalid regional state size")
 	}
 	var s State
-	if json.Unmarshal(raw, &s) != nil || s.Format != 1 || s.Fingerprint != j.fingerprint || s.AcceptedSequence > math.MaxInt64 || !json.Valid(s.Data) {
+	if json.Unmarshal(raw, &s) != nil || s.Format != journalFormat || s.ManagedIDs == nil || len(s.ManagedIDs) > MaxManagedRows || s.Fingerprint != j.fingerprint || s.AcceptedSequence > math.MaxInt64 || !json.Valid(s.Data) {
 		return nil, errors.New("regional state invalid or configuration changed")
+	}
+	for id, present := range s.ManagedIDs {
+		if id == "" || !present {
+			return nil, errors.New("invalid managed document inventory")
+		}
 	}
 	if s.Pending != nil {
 		p := s.Pending
@@ -110,7 +118,37 @@ func (j *Journal) decode(tx *bolt.Tx) (*State, error) {
 	return &s, nil
 }
 func validIntent(p Intent) bool {
-	return p.Sequence > 0 && p.Sequence <= math.MaxInt64 && (p.Operation == "upsert" || p.Operation == "delete") && json.Valid(p.Content) && p.Digest == intentDigest(p.Operation, p.Content)
+	_, err := intentID(p)
+	return p.Sequence > 0 && p.Sequence <= math.MaxInt64 && err == nil && p.Digest == intentDigest(p.Operation, p.Content)
+}
+
+// First delivery applies one document per intent. Keep the ownership inventory
+// consistent with that exact content, independently of source checkpoint timing.
+func intentID(p Intent) (string, error) {
+	var body map[string]json.RawMessage
+	if json.Unmarshal(p.Content, &body) != nil || len(body) != 1 {
+		return "", errors.New("one target operation required")
+	}
+	var id string
+	switch p.Operation {
+	case "upsert":
+		var docs []map[string]json.RawMessage
+		if json.Unmarshal(body["docs"], &docs) != nil || len(docs) != 1 || json.Unmarshal(docs[0]["id"], &id) != nil {
+			return "", errors.New("one upsert document with a string id required")
+		}
+	case "delete":
+		var ids []string
+		if json.Unmarshal(body["ids"], &ids) != nil || len(ids) != 1 {
+			return "", errors.New("one deletion id required")
+		}
+		id = ids[0]
+	default:
+		return "", errors.New("unsupported target operation")
+	}
+	if id == "" {
+		return "", errors.New("nonempty target id required")
+	}
+	return id, nil
 }
 func intentDigest(operation string, content []byte) string {
 	h := sha256.New()
@@ -172,6 +210,10 @@ func (j *Journal) Prepare(operation string, content json.RawMessage) (*Intent, e
 		if !validIntent(p) {
 			return errors.New("invalid target operation")
 		}
+		id, _ := intentID(p)
+		if p.Operation == "upsert" && !s.ManagedIDs[id] && len(s.ManagedIDs) >= MaxManagedRows {
+			return errors.New("managed document inventory budget exceeded")
+		}
 		s.Pending = &p
 		intent = &p
 		return j.write(tx, s)
@@ -189,6 +231,15 @@ func (j *Journal) Accept(intent Intent) error {
 		}
 		if s.Pending == nil || s.Pending.Sequence != intent.Sequence || s.Pending.Digest != intent.Digest || s.Pending.Operation != intent.Operation || !bytes.Equal(s.Pending.Content, intent.Content) {
 			return errors.New("target acceptance does not match pending intent")
+		}
+		id, err := intentID(*s.Pending)
+		if err != nil {
+			return err
+		}
+		if intent.Operation == "upsert" {
+			s.ManagedIDs[id] = true
+		} else {
+			delete(s.ManagedIDs, id)
 		}
 		s.AcceptedSequence = intent.Sequence
 		s.Pending = nil
