@@ -385,3 +385,40 @@ and final preservation of unrelated resources. Run `TestLambdaDBLiveLifecycle`
 with the existing protected-file launcher to validate the real supported SDK and
 worker against an isolated target. The live test also supports
 `CDC_TEST_REGIONAL_BINARY` for the actual backend regional process over TLS.
+
+## Offline inventory inspection and reviewed repair
+
+The worker includes two maintenance modes for an existing stopped regional volume:
+
+```sh
+cdc-worker -inspect-inventory -state /state/checkpoint.db
+cdc-worker -reconcile-inventory /protected/reviewed-inventory.json -state /state/checkpoint.db
+```
+
+The first opens state read-only and emits validated metadata, known generation
+names and an exact state digest, without source values, secret references or
+credentials. It refuses a running worker's lock and missing/invalid state. The
+second atomically records an explicitly reviewed complete inventory and receipt;
+it never starts capture or contacts a source/target. Both modes run separately
+from capture/search options and require the original retained regional volume.
+
+Repair requires cached unexpired central pause/removal authority, a fenced epoch,
+exact binding/desired revision/state digest, all previously recorded names and an
+explicit `ownership_confirmed:true` operator attestation. Its strict manifest is
+capped at 16 KiB and 128 unique production-shaped names. Independent creation/audit
+evidence must prove each name and completeness, including abandoned generations.
+Matching prefixes and current target listings do not establish ownership. Known
+name collisions, omitted names, changed state and corrupt/foreign identities fail
+closed. Older ambiguous history still requires manual investigation.
+
+Only the inventory changes. Rows/checkpoint, snapshot ownership, epoch, selection,
+control and authorization remain intact. A durable digest/revision/timestamp
+receipt makes response-loss retry idempotent. The normal managed worker performs
+remote cleanup only under the existing central lifecycle command. An inventory
+receipt alone cannot mark connection removal complete or revive a removed binding.
+
+See the backend `docs/CDC_INVENTORY_RECOVERY.md` for the operator sequence, expired
+authority handling and a deliberately unconfirmed manifest template. Keep real
+manifests, state copies and evidence out of source control. Maintained tests include
+actual CLI SIGKILL before/after the bbolt commit and subsequent central-authorized
+owned-only cleanup with real local PostgreSQL and a TLS supported-SDK fixture.

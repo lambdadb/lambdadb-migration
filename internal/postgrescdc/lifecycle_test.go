@@ -147,7 +147,7 @@ func TestGenerationInventoryBudgetAndCollisionQuarantine(t *testing.T) {
 		t.Fatal(err)
 	}
 	l, err := store.lifecycle()
-	if err != nil || !l.LegacyUnknown || len(l.Generations) != maxTrackedGenerations {
+	if err != nil || !l.LegacyUnknown || !l.NameCollision || len(l.Generations) != maxTrackedGenerations {
 		t.Fatal("failed create/collision corrupted inventory", err)
 	}
 }

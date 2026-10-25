@@ -16,12 +16,14 @@ import (
 const maxTrackedGenerations = 128
 
 type lifecycleState struct {
-	Format                  int             `json:"format"`
-	Fingerprint             string          `json:"fingerprint"`
-	Generations             map[string]bool `json:"generations"`
-	LegacyUnknown           bool            `json:"legacy_unknown,omitempty"`
-	CompletedResyncRevision uint64          `json:"completed_resync_revision,omitempty"`
-	Removed                 bool            `json:"removed,omitempty"`
+	Format                  int               `json:"format"`
+	Fingerprint             string            `json:"fingerprint"`
+	Generations             map[string]bool   `json:"generations"`
+	NameCollision           bool              `json:"name_collision,omitempty"`
+	Reconciliation          *InventoryReceipt `json:"reconciliation,omitempty"`
+	LegacyUnknown           bool              `json:"legacy_unknown,omitempty"`
+	CompletedResyncRevision uint64            `json:"completed_resync_revision,omitempty"`
+	Removed                 bool              `json:"removed,omitempty"`
 }
 
 func loadLifecycle(tx *bolt.Tx) (*lifecycleState, error) {
@@ -106,6 +108,7 @@ func (s *Store) quarantineInventory() error {
 			return errors.New("missing inventory")
 		}
 		l.LegacyUnknown = true
+		l.NameCollision = true
 		return saveLifecycle(tx, l)
 	})
 }

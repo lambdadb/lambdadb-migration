@@ -159,8 +159,11 @@ func (t *LambdaTarget) Create(ctx context.Context, c Config) (string, error) {
 	}
 	return name, nil
 }
+func validGenerationName(c Config, name string) bool {
+	return regexp.MustCompile("^" + regexp.QuoteMeta(c.CollectionPrefix) + "_[0-9a-f]{24}$").MatchString(name)
+}
 func (t *LambdaTarget) RemoveGeneration(ctx context.Context, c Config, name string) error {
-	if !regexp.MustCompile("^" + regexp.QuoteMeta(c.CollectionPrefix) + "_[0-9a-f]{24}$").MatchString(name) {
+	if !validGenerationName(c, name) {
 		return errors.New("refusing to remove an invalid owned generation")
 	}
 	_, err := t.Client.Collection(name).Delete(ctx)

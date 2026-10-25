@@ -23,9 +23,17 @@ func main() {
 	searchCert := flag.String("search-tls-cert", "", "regional search TLS certificate")
 	searchKey := flag.String("search-tls-key", "", "regional search TLS private key")
 	searchKeys := flag.String("search-verification-keys", "", "local Ed25519 JWKS file; enables signed grants and disables static-token authentication")
+	inspect := flag.Bool("inspect-inventory", false, "inspect existing offline regional resource ownership; metadata only")
+	reconcile := flag.String("reconcile-inventory", "", "reviewed complete inventory manifest; offline local repair only")
 	flag.Parse()
 	var err error
-	if *controlURL != "" {
+	if *inspect || *reconcile != "" {
+		if (*inspect && *reconcile != "") || *controlURL != "" || *searchListen != "" || flag.NArg() != 0 {
+			err = fmt.Errorf("inventory maintenance must run alone against offline regional state")
+		} else {
+			err = maintainInventory(*statePath, *inspect, *reconcile, os.Stdout)
+		}
+	} else if *controlURL != "" {
 		err = managed(*controlURL, *bindingID, *controlTokenEnv, *statePath, searchOptions{listen: *searchListen, tokenEnv: *searchTokenEnv, cert: *searchCert, key: *searchKey, verificationKeys: *searchKeys})
 	} else if *searchListen != "" {
 		err = fmt.Errorf("regional search requires managed control")
@@ -35,7 +43,11 @@ func main() {
 	if err != nil {
 		// Driver/API errors can include credentials or source values. Report only
 		// a redacted terminal status here; tests inspect typed/local failures.
-		fmt.Fprintln(os.Stderr, "CDC stopped; verify authority, source continuity, regional state and target generation before recovery")
+		if *inspect || *reconcile != "" {
+			fmt.Fprintln(os.Stderr, "CDC inventory maintenance failed; verify offline state, current authority and reviewed manifest")
+		} else {
+			fmt.Fprintln(os.Stderr, "CDC stopped; verify authority, source continuity, regional state and target generation before recovery")
+		}
 		os.Exit(1)
 	}
 }
