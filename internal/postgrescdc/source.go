@@ -50,7 +50,10 @@ func preflight(ctx context.Context, conn *pgx.Conn, c Config) (uint32, []Column,
 		return 0, nil, err
 	}
 	defer rows.Close()
-	var cols []Column
+	var tableColumns []struct {
+		Column
+		Generated string
+	}
 	keys := 0
 	for rows.Next() {
 		var col Column
@@ -58,26 +61,18 @@ func preflight(ctx context.Context, conn *pgx.Conn, c Config) (uint32, []Column,
 		if err := rows.Scan(&col.Name, &col.OID, &col.Modifier, &col.Key, &generated); err != nil {
 			return 0, nil, err
 		}
-		if generated != "" {
-			return 0, nil, errors.New("generated columns unsupported")
-		}
-		if !supportedOID(col.OID) {
-			return 0, nil, fmt.Errorf("unsupported source type OID %d", col.OID)
-		}
 		if col.Key {
 			keys++
-			if col.OID != 20 && col.OID != 21 && col.OID != 23 && col.OID != 25 && col.OID != 1043 && col.OID != 2950 {
-				return 0, nil, errors.New("primary key must be integer, text or uuid")
-			}
 		}
-		if col.Name == "id" && !col.Key {
-			return 0, nil, errors.New("non-key id column conflicts with target id")
-		}
-		cols = append(cols, col)
+		tableColumns = append(tableColumns, struct {
+			Column
+			Generated string
+		}{col, generated})
 	}
 	if err := rows.Err(); err != nil {
 		return 0, nil, err
 	}
+	rows.Close()
 	if keys != 1 {
 		return 0, nil, errors.New("single-column primary key required")
 	}
@@ -94,6 +89,7 @@ func preflight(ctx context.Context, conn *pgx.Conn, c Config) (uint32, []Column,
 	}
 	defer pubs.Close()
 	count := 0
+	var published []string
 	for pubs.Next() {
 		var schema, table string
 		var names []string
@@ -101,14 +97,10 @@ func preflight(ctx context.Context, conn *pgx.Conn, c Config) (uint32, []Column,
 		if err := pubs.Scan(&schema, &table, &names, &filter); err != nil {
 			return 0, nil, err
 		}
-		if schema != c.Schema || table != c.Table || filter != nil || len(names) != len(cols) {
+		if schema != c.Schema || table != c.Table || filter != nil || len(names) == 0 {
 			return 0, nil, errors.New("publication selection mismatch")
 		}
-		for i, col := range cols {
-			if names[i] != col.Name {
-				return 0, nil, errors.New("publication column mismatch")
-			}
-		}
+		published = names
 		count++
 	}
 	if err := pubs.Err(); err != nil {
@@ -116,6 +108,46 @@ func preflight(ctx context.Context, conn *pgx.Conn, c Config) (uint32, []Column,
 	}
 	if count != 1 {
 		return 0, nil, errors.New("publication must select exactly one table")
+	}
+	// pgoutput emits selected columns in table attribute order, independent of
+	// the order in CREATE PUBLICATION. Use that exact projection for snapshot,
+	// row reconstruction and drift checks. Unpublished types/values are irrelevant.
+	selected := make(map[string]bool, len(published))
+	for _, column := range published {
+		if selected[column] {
+			return 0, nil, errors.New("duplicate publication column")
+		}
+		selected[column] = true
+	}
+	var cols []Column
+	selectedKey := false
+	for _, entry := range tableColumns {
+		col := entry.Column
+		if !selected[col.Name] {
+			continue
+		}
+		if entry.Generated != "" {
+			return 0, nil, errors.New("selected generated columns unsupported")
+		}
+		if !supportedOID(col.OID) {
+			return 0, nil, fmt.Errorf("unsupported source type OID %d", col.OID)
+		}
+		if col.Key {
+			selectedKey = true
+			if col.OID != 20 && col.OID != 21 && col.OID != 23 && col.OID != 25 && col.OID != 1043 && col.OID != 2950 {
+				return 0, nil, errors.New("primary key must be integer, text or uuid")
+			}
+		}
+		if col.Name == "id" && !col.Key {
+			return 0, nil, errors.New("non-key id column conflicts with target id")
+		}
+		cols = append(cols, col)
+	}
+	if len(cols) != len(selected) {
+		return 0, nil, errors.New("publication column mismatch")
+	}
+	if !selectedKey {
+		return 0, nil, errors.New("publication must include primary key")
 	}
 	return oid, cols, nil
 }

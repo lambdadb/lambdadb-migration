@@ -26,7 +26,8 @@ target, so it does **not** certify a deployed Seoul worker or its network route.
 ## Smallest implementation and guarantees
 
 1. Preflight one ordinary PostgreSQL 15+ table, its single-column primary key and
-   a dedicated publication with all columns and insert/update/delete/truncate.
+   a dedicated publication with insert/update/delete/truncate. A column list
+   selects the exact snapshot/stream projection and must retain the primary key.
    Reject RLS, partitions, generated columns, filters and unsupported types.
 2. Create a persistent `pgoutput` slot using `EXPORT_SNAPSHOT`. Import the slot's
    exported snapshot before reading any table data in a read-only repeatable-read
@@ -106,7 +107,10 @@ continuity; the spike does not promise unlimited-outage recovery.
 
 ## Source and mapping
 
-All live table columns are selected. Supported PostgreSQL types are `bool`,
+Publication columns are selected in physical table order for both the exported
+snapshot and pgoutput decoding. Unpublished values never enter the row mirror or
+target; their unsupported/generated types do not block the selected projection.
+Row filters remain rejected. Supported selected PostgreSQL types are `bool`,
 `int2/int4/int8`, `text/varchar`, `uuid`, `json/jsonb`, and finite `float4/float8`.
 Primary keys must be integer, nonempty text, or UUID. Target `id` is the source PK
 rendered as a string. A non-key source `id` column is rejected. Other column names
