@@ -4,6 +4,9 @@ on:
     paths:
       - "internal/postgrescdc/**"
       - "cmd/cdc-worker/**"
+      - "cmd/connection-worker/**"
+      - "internal/connections/**"
+      - "Dockerfile.connection-worker"
       - "scripts/cdc-test-*"
       - "Dockerfile.cdc-worker"
       - "go.mod"
@@ -15,6 +18,9 @@ on:
     paths:
       - "internal/postgrescdc/**"
       - "cmd/cdc-worker/**"
+      - "cmd/connection-worker/**"
+      - "internal/connections/**"
+      - "Dockerfile.connection-worker"
       - "scripts/cdc-test-*"
       - "Dockerfile.cdc-worker"
       - "go.mod"
@@ -37,3 +43,6 @@ jobs:
       - run: go build ./...
       - run: docker build -f Dockerfile.cdc-worker -t lambdadb-cdc-worker:ci .
       - run: docker run --rm lambdadb-cdc-worker:ci -help
+
+      - run: docker build -f Dockerfile.connection-worker -t lambdadb-connection-worker:ci .
+      - run: docker run --rm lambdadb-connection-worker:ci -help

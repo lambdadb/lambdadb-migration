@@ -114,7 +114,7 @@ func CredentialReference(ref, region string) bool {
 	return len(parts) == 7 && parts[0] == "arn" && (parts[1] == "aws" || parts[1] == "aws-us-gov" || parts[1] == "aws-cn") && parts[2] == "secretsmanager" && parts[3] == region && parts[4] != "" && parts[5] == "secret" && parts[6] != "" && len(ref) <= 2048
 }
 func ValidateSelection(p PostgresSelection, mode string) error {
-	if !DatasetName.MatchString(p.Schema) || !DatasetName.MatchString(p.Table) || (mode == "continuous" && !DatasetName.MatchString(p.Publication)) || (p.Publication != "" && !DatasetName.MatchString(p.Publication)) || len(p.Columns) > 256 {
+	if !DatasetName.MatchString(p.Schema) || !DatasetName.MatchString(p.Table) || (mode == "continuous" && !DatasetName.MatchString(p.Publication)) || (p.Publication != "" && (!DatasetName.MatchString(p.Publication) || mode == "snapshot")) || len(p.Columns) > 256 {
 		return errors.New("invalid PostgreSQL selection")
 	}
 	seen := map[string]bool{}
@@ -145,7 +145,7 @@ func (a Approved) Validate(region string) error {
 		return errors.New("invalid target or credential reference")
 	}
 	var indexes map[string]json.RawMessage
-	if json.Unmarshal(b.IndexConfigs, &indexes) != nil || indexes == nil {
+	if json.Unmarshal(b.IndexConfigs, &indexes) != nil || len(indexes) == 0 {
 		return errors.New("invalid index configuration")
 	}
 	return nil
@@ -169,7 +169,9 @@ func (o Observation) Validate(id string) bool {
 func Fingerprint(b Binding) string {
 	raw, _ := json.Marshal(b)
 	var value any
-	_ = json.Unmarshal(raw, &value)
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	_ = decoder.Decode(&value)
 	raw, _ = json.Marshal(value)
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])

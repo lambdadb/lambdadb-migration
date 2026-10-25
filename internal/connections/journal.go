@@ -246,3 +246,23 @@ func (j *Journal) Accept(intent Intent) error {
 		return j.write(tx, s)
 	})
 }
+
+// UpdateData serializes lifecycle/cursor updates with observation sequencing.
+// It does not replace a concurrently accepted target intent or ID inventory.
+func (j *Journal) UpdateData(update func(json.RawMessage) (json.RawMessage, error)) error {
+	return j.db.Update(func(tx *bolt.Tx) error {
+		s, err := j.decode(tx)
+		if err != nil {
+			return err
+		}
+		data, err := update(bytes.Clone(s.Data))
+		if err != nil {
+			return err
+		}
+		if !json.Valid(data) {
+			return errors.New("invalid regional lifecycle state")
+		}
+		s.Data = data
+		return j.write(tx, s)
+	})
+}

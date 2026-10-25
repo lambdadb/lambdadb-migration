@@ -79,6 +79,19 @@ func OpenStore(path string) (*Store, error) { return openStore(path, true) }
 // OpenExistingStore is the managed runner restart path. Missing source row state
 // cannot be reconstructed from a checkpoint alone and must never be auto-created.
 func OpenExistingStore(path string) (*Store, error) { return openStore(path, false) }
+
+// OpenNewStore exclusively creates a newly registered connection's source file.
+func OpenNewStore(path string) (*Store, error) {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return nil, errors.New("new source state file already exists or is unavailable")
+	}
+	if err = f.Close(); err != nil {
+		return nil, err
+	}
+	return OpenStore(path)
+}
+
 func openStore(path string, create bool) (*Store, error) {
 	options := &bolt.Options{Timeout: 100 * time.Millisecond}
 	if !create {

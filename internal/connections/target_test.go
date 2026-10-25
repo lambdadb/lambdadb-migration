@@ -152,3 +152,20 @@ func TestTargetRedirectDoesNotForwardCredentialsOrAcknowledge(t *testing.T) {
 		t.Fatal("redirect followed or accepted")
 	}
 }
+
+func TestDescribeRequiresPublicCollectionResponseEnvelope(t *testing.T) {
+	for _, test := range []struct {
+		body  string
+		valid bool
+	}{
+		{`{"collection":{"projectName":"customer-project","collectionName":"items","connectionId":"connection"}}`, true},
+		{`{"projectName":"customer-project","collectionName":"items","connectionId":"connection"}`, false},
+		{`{"collection":{"projectName":"another-project","collectionName":"items","connectionId":"connection"}}`, false},
+	} {
+		target, _ := targetFixture(t, func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(test.body)) })
+		meta, err := target.Describe(context.Background())
+		if (err == nil) != test.valid || (test.valid && (meta == nil || meta.ConnectionID != "connection")) {
+			t.Fatal("public metadata boundary mismatch", err)
+		}
+	}
+}

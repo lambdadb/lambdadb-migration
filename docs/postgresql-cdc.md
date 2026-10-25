@@ -1,10 +1,10 @@
 # PostgreSQL CDC correctness spike
 
 > The October 26 accepted product direction is defined in the backend repository's
-> `docs/CONNECTIONS.md`: self-service generic connections, snapshot/continuous modes,
+> `docs/CONNECTIONS.md` and this repository’s [current worker guide](connections.md): self-service generic connections, snapshot/continuous modes,
 > publication column parity, a fixed normal customer collection and ordinary SDK
-> search. Historical new-generation and search-gate behavior below is still present
-> in code until its replacement is validated; it is not the new product default.
+> search. `connection-worker` now implements that path. Historical generation/search
+> code below is retained as an explicitly gated experiment, not the product default.
 
 This separate executable, connector implementation, correctness tests and worker
 image are owned by `lambdadb-migration`. The management API remains central in

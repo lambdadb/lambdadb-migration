@@ -60,6 +60,7 @@ func (c CaptureSelection) matches(columns []Column) bool {
 type Capture struct {
 	Selection CaptureSelection
 	Store     *Store
+	Authorize func() error
 }
 
 func (c *Capture) Initialize(ctx context.Context, dsn string) (*State, error) {
@@ -229,6 +230,11 @@ func (c *Capture) Stream(ctx context.Context, dsn string, apply func(context.Con
 	decoder := &transactionDecoder{state: state}
 	nextFeedback := time.Now()
 	check := func() error {
+		if c.Authorize != nil {
+			if e := c.Authorize(); e != nil {
+				return e
+			}
+		}
 		oid, columns, e := preflight(ctx, sql, config)
 		if e != nil {
 			return e
@@ -245,6 +251,11 @@ func (c *Capture) Stream(ctx context.Context, dsn string, apply func(context.Con
 		if !time.Now().Before(nextFeedback) {
 			if err = check(); err != nil {
 				return err
+			}
+			if c.Authorize != nil {
+				if e := c.Authorize(); e != nil {
+					return e
+				}
 			}
 			position := pglogrepl.LSN(state.LSN)
 			if err = pglogrepl.SendStandbyStatusUpdate(ctx, repl, pglogrepl.StandbyStatusUpdate{WALWritePosition: position, WALFlushPosition: position, WALApplyPosition: position}); err != nil {
@@ -299,6 +310,11 @@ func (c *Capture) Stream(ctx context.Context, dsn string, apply func(context.Con
 			if e = apply(ctx, state, next); e != nil {
 				return e
 			}
+			if c.Authorize != nil {
+				if e = c.Authorize(); e != nil {
+					return e
+				}
+			}
 			if e = c.Store.Save(next); e != nil {
 				return e
 			}
@@ -328,6 +344,9 @@ func (c *Capture) Disconnect(ctx context.Context, dsn string) error {
 	if err != nil {
 		return err
 	}
+	if state == nil && owner == nil {
+		return nil
+	}
 	sql, err := pgx.Connect(ctx, dsn)
 	if err != nil {
 		return err
@@ -339,9 +358,6 @@ func (c *Capture) Disconnect(ctx context.Context, dsn string) error {
 	}
 	if !exists {
 		return nil
-	}
-	if state == nil && owner == nil {
-		return errors.New("source slot exists without regional ownership")
 	}
 	repl, err := replicationConn(ctx, dsn)
 	if err != nil {

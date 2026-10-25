@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -171,5 +172,36 @@ func TestTruncatedSourceStoreIsNotInitialized(t *testing.T) {
 	info, err := os.Stat(path)
 	if err != nil || info.Size() != 0 {
 		t.Fatal("failed resume modified truncated state")
+	}
+}
+
+func TestCaptureDoesNotCheckpointAfterLocalAuthorityExpiresDuringApply(t *testing.T) {
+	f, c := captureFixture(t)
+	baseline, err := c.Initialize(context.Background(), f.dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var expired atomic.Bool
+	denied := errors.New("authority expired")
+	c.Authorize = func() error {
+		if expired.Load() {
+			return denied
+		}
+		return nil
+	}
+	cancel, done := runCapture(t, c, f.dsn, func(context.Context, *State, *State) error { expired.Store(true); return nil })
+	defer cancel()
+	execSQL(t, f.sql, "UPDATE "+f.c.Schema+".items SET title='accepted-before-expiry' WHERE id=1")
+	select {
+	case err = <-done:
+		if !errors.Is(err, denied) {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("capture did not stop at authority expiry")
+	}
+	saved, err := c.Store.Load()
+	if err != nil || saved.LSN != baseline.LSN {
+		t.Fatal("expired authority advanced checkpoint", err)
 	}
 }

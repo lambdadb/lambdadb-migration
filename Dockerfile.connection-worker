@@ -1,0 +1,13 @@
+FROM golang:1.26-alpine AS build
+RUN apk add --no-cache ca-certificates
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/connection-worker ./cmd/connection-worker
+
+FROM alpine:3.23
+RUN apk add --no-cache ca-certificates
+COPY --from=build /out/connection-worker /usr/local/bin/connection-worker
+USER 65532:65532
+ENTRYPOINT ["connection-worker"]
