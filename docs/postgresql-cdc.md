@@ -340,3 +340,48 @@ gates. Keep dated local runs and failure-investigation records outside commits.
   torn writes, disk loss, source-server crash and an interruption of a deployed
   central API remain untested.
 - Console UI and production provisioning remain deferred.
+
+## Explicit lifecycle cleanup and resync
+
+The backend connection list, DELETE and POST resync endpoints are documented in
+its `docs/CDC_LIFECYCLE.md`. Both lifecycle mutations require the expected desired
+revision and `discard_replica:true`. They use control protocol 2; binding identity
+and search-grant protocol remain unchanged. Upgrade the regional binary and
+worker before issuing these commands. Older workers can retain their cached v1
+permission only until expiry; command delivery is never cleanup completion.
+
+Production target names are journaled in the regional bbolt file before SDK
+collection creation. The bounded inventory holds at most 128 names, including
+unconfirmed creates. Cleanup never discovers ownership by listing a prefix.
+A name collision quarantines the journal; legacy volumes without a complete
+inventory require manual reconciliation and refuse automated destruction.
+Ordinary restarts keep old generations until explicit cleanup.
+
+After capture exits and serving is cleared, an authorized regional cleanup task
+verifies source ownership, refuses active/unowned slots and incompatible-schema
+resync, drops its slot and deletes only recorded collections through SDK Delete.
+It requires typed GET 404 before removing a journal entry. Uncertain responses
+retain local recovery state. Already absent slots/collections permit idempotent
+restart. Do not independently reuse connector slot or collection names.
+
+The final local transaction clears row/bootstrap/selection state and records a
+terminal removal or completed resync-cleanup revision, retaining execution epoch,
+control and observation sequence. Resync then starts the existing consistent
+snapshot and complete verification path into a fresh generation. Source rows,
+publications, unrelated collections and the target project remain untouched.
+A resync is unavailable until the replacement passes validation; it does not
+repair incompatible mappings or erase remote backups. Removal remains terminal.
+
+Cleanup rechecks cached authority before mutations/reset, has a 30-second task
+deadline and stops on pause/expiry/supersession. Failure reports `action_required`
+until a new command revision or process restart. No per-batch central call is
+introduced. Collection absence does not prove physical reclamation or fence a
+previously accepted remote create/mutation; those engine contracts remain open.
+
+Maintained tests exercise real SIGKILL at planned-create, slot-drop, target-delete,
+pre-reset, in-reset and post-commit boundaries; authority/inventory/epoch fences;
+unowned/foreign source slots and incompatible schema; response-loss/404 retry;
+and final preservation of unrelated resources. Run `TestLambdaDBLiveLifecycle`
+with the existing protected-file launcher to validate the real supported SDK and
+worker against an isolated target. The live test also supports
+`CDC_TEST_REGIONAL_BINARY` for the actual backend regional process over TLS.

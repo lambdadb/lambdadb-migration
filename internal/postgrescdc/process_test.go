@@ -69,6 +69,21 @@ func (m *processTarget) serve(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"collection": map[string]any{"collectionName": body.Name, "description": "", "tags": map[string]string{}, "defaultBranchName": "main", "snapshotRetentionInDays": 7, "createdAt": 1700000000000}})
 		return
 	}
+	if len(parts) == 4 && (r.Method == "GET" || r.Method == "DELETE") {
+		name := parts[3]
+		if _, ok := m.docs[name]; !ok {
+			w.WriteHeader(404)
+			_, _ = w.Write([]byte(`{"message":"collection not found"}`))
+			return
+		}
+		if r.Method == "DELETE" {
+			delete(m.docs, name)
+			_, _ = w.Write([]byte(`{"message":"deleted"}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"collection": map[string]any{"collectionName": name, "description": "", "tags": map[string]string{}, "defaultBranchName": "main", "snapshotRetentionInDays": 7, "createdAt": 1700000000000}})
+		return
+	}
 	if len(parts) < 5 {
 		http.NotFound(w, r)
 		return

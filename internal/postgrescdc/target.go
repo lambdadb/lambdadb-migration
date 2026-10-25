@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"net/http"
 	"reflect"
+	"regexp"
 	"time"
 
 	lambdadb "github.com/lambdadb/go-lambdadb"
@@ -118,21 +119,71 @@ func (t *LambdaTarget) Verify(ctx context.Context, generation string, expected m
 		}
 	}
 }
-func (t *LambdaTarget) Create(ctx context.Context, c Config) (string, error) {
+
+type plannedTarget interface {
+	PlanGeneration(Config) (string, error)
+	CreatePlanned(context.Context, Config, string) error
+}
+
+var errGenerationCollision = errors.New("generation name collision; manual inspection required")
+
+func (t *LambdaTarget) PlanGeneration(c Config) (string, error) {
 	var suffix [12]byte
 	if _, err := rand.Read(suffix[:]); err != nil {
 		return "", err
 	}
-	collection := c.CollectionPrefix + "_" + hex.EncodeToString(suffix[:])
+	return c.CollectionPrefix + "_" + hex.EncodeToString(suffix[:]), nil
+}
+func (t *LambdaTarget) CreatePlanned(ctx context.Context, c Config, collection string) error {
 	var indexes map[string]components.IndexConfigsUnion
-	if err := json.Unmarshal(c.IndexConfigs, &indexes); err != nil {
-		return "", errors.New("invalid LambdaDB index configuration")
+	if json.Unmarshal(c.IndexConfigs, &indexes) != nil {
+		return errors.New("invalid LambdaDB index configuration")
 	}
 	_, err := t.Client.Collections.Create(ctx, lambdadb.CreateCollectionOptions{CollectionName: collection, IndexConfigs: indexes})
-	if err != nil {
-		return "", errors.New("target generation creation failed; inspect isolated project")
+	var collision *apierrors.ResourceAlreadyExistsError
+	if errors.As(err, &collision) {
+		return errGenerationCollision
 	}
-	return collection, nil
+	if err != nil {
+		return errors.New("target generation creation outcome uncertain")
+	}
+	return nil
+}
+func (t *LambdaTarget) Create(ctx context.Context, c Config) (string, error) {
+	name, err := t.PlanGeneration(c)
+	if err != nil {
+		return "", err
+	}
+	if err = t.CreatePlanned(ctx, c, name); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+func (t *LambdaTarget) RemoveGeneration(ctx context.Context, c Config, name string) error {
+	if !regexp.MustCompile("^" + regexp.QuoteMeta(c.CollectionPrefix) + "_[0-9a-f]{24}$").MatchString(name) {
+		return errors.New("refusing to remove an invalid owned generation")
+	}
+	_, err := t.Client.Collection(name).Delete(ctx)
+	var missing *apierrors.ResourceNotFoundError
+	if err != nil && !errors.As(err, &missing) {
+		return errors.New("generation deletion outcome uncertain")
+	}
+	// Acknowledgment alone does not prove logical unreachability. Physical storage
+	// reclamation remains the data plane's retention/garbage-collection contract.
+	for {
+		_, err = t.Client.Collection(name).Get(ctx)
+		if errors.As(err, &missing) {
+			return nil
+		}
+		if err != nil {
+			return errors.New("generation deletion could not be verified")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 func document(id string, row Row) map[string]any {

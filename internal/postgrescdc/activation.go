@@ -89,6 +89,9 @@ func (s *Store) begin(c Config, managed bool) (Generation, error) {
 		if e.Owner.Epoch == math.MaxUint64 || (e.Owner.Epoch != 0 && e.Owner.Fingerprint != c.fingerprint()) {
 			return errors.New("execution identity changed or epoch exhausted")
 		}
+		if err = initLifecycle(tx, c, e); err != nil {
+			return err
+		}
 		run = Generation{Epoch: e.Owner.Epoch + 1, Fingerprint: c.fingerprint(), ExpiresAt: c.AuthorityExpiresAt}
 		if managed {
 			a, err := approved(tx)
@@ -97,6 +100,13 @@ func (s *Store) begin(c Config, managed bool) (Generation, error) {
 			}
 			if a == nil || a.Binding.fingerprint() != run.Fingerprint || a.Control.DesiredState != "running" || !time.Now().Before(a.Control.AuthorityExpiresAt) {
 				return errors.New("managed execution authority unavailable")
+			}
+			l, err := loadLifecycle(tx)
+			if err != nil {
+				return err
+			}
+			if l == nil || l.Removed || l.CompletedResyncRevision < a.Control.ResyncRevision {
+				return errors.New("lifecycle operation must complete before capture")
 			}
 			run.ExpiresAt = a.Control.AuthorityExpiresAt
 		}
@@ -125,6 +135,9 @@ func (s *Store) nameGeneration(run Generation, name string) (Generation, error) 
 		}
 		if name == "" || e.Owner.Name != "" {
 			return errors.New("generation name already assigned or empty")
+		}
+		if err = trackGeneration(tx, run, name); err != nil {
+			return err
 		}
 		e.Owner.Name = name
 		run = e.Owner

@@ -47,6 +47,7 @@ func (w *Worker) Run(ctx context.Context, dsn string) error {
 	w.Serving.clear()
 	defer w.Serving.clear()
 	searchTarget, _ := w.Target.(SearchTarget)
+	planner, _ := w.Target.(plannedTarget)
 	c := w.Config
 	if err := c.Validate(); err != nil {
 		return err
@@ -118,13 +119,39 @@ func (w *Worker) Run(ctx context.Context, dsn string) error {
 			return err
 		}
 	}
-	generation, err := w.Target.Create(ctx, c)
-	if err != nil {
-		return err
-	}
-	run, err = w.Store.nameGeneration(run, generation)
-	if err != nil {
-		return err
+	var generation string
+	if planner != nil {
+		generation, err = planner.PlanGeneration(c)
+		if err != nil {
+			return err
+		}
+		run, err = w.Store.nameGeneration(run, generation)
+		if err != nil {
+			return err
+		}
+		processBoundary("generation_planned")
+		if err = check(); err != nil {
+			return err
+		}
+		err = planner.CreatePlanned(ctx, c, generation)
+		if errors.Is(err, errGenerationCollision) {
+			if e := w.Store.quarantineInventory(); e != nil {
+				return e
+			}
+		}
+		if err != nil {
+			return err
+		}
+	} else {
+		// Deterministic in-process test targets retain the existing create seam.
+		generation, err = w.Target.Create(ctx, c)
+		if err != nil {
+			return err
+		}
+		run, err = w.Store.nameGeneration(run, generation)
+		if err != nil {
+			return err
+		}
 	}
 	w.Serving.start(ctx, run, c, searchTarget)
 	var barrierLSN string

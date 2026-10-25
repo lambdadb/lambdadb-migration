@@ -29,22 +29,24 @@ type Command struct {
 	DesiredRevision    uint64    `json:"desired_revision"`
 	DesiredState       string    `json:"desired_state"`
 	AuthorityExpiresAt time.Time `json:"authority_expires_at"`
+	ResyncRevision     uint64    `json:"resync_revision,omitempty"`
 }
 type Approved struct {
 	Binding Config  `json:"binding"`
 	Control Command `json:"control"`
 }
 type Observation struct {
-	ProtocolVersion int    `json:"protocol_version"`
-	BindingID       string `json:"binding_id"`
-	DesiredRevision uint64 `json:"desired_revision"`
-	Sequence        uint64 `json:"sequence"`
-	Phase           string `json:"phase"`
-	Epoch           uint64 `json:"epoch,omitempty"`
-	Generation      string `json:"generation,omitempty"`
-	DurableLSN      string `json:"durable_lsn,omitempty"`
-	AppliedLSN      string `json:"applied_lsn,omitempty"`
-	BarrierLSN      string `json:"barrier_lsn,omitempty"`
+	ProtocolVersion         int    `json:"protocol_version"`
+	BindingID               string `json:"binding_id"`
+	DesiredRevision         uint64 `json:"desired_revision"`
+	Sequence                uint64 `json:"sequence"`
+	CompletedResyncRevision uint64 `json:"completed_resync_revision,omitempty"`
+	Phase                   string `json:"phase"`
+	Epoch                   uint64 `json:"epoch,omitempty"`
+	Generation              string `json:"generation,omitempty"`
+	DurableLSN              string `json:"durable_lsn,omitempty"`
+	AppliedLSN              string `json:"applied_lsn,omitempty"`
+	BarrierLSN              string `json:"barrier_lsn,omitempty"`
 }
 
 func (a *Approved) validate(id string) error {
@@ -52,7 +54,7 @@ func (a *Approved) validate(id string) error {
 		return err
 	}
 	c := a.Control
-	if c.ProtocolVersion != 1 || c.BindingID != id || a.Binding.BindingID != id || c.DesiredRevision == 0 || c.DesiredRevision > math.MaxInt64 || (c.DesiredState != "running" && c.DesiredState != "paused") || c.AuthorityExpiresAt.IsZero() {
+	if !validCommand(c) || c.BindingID != id || a.Binding.BindingID != id || c.DesiredRevision == 0 || c.DesiredRevision > math.MaxInt64 || c.AuthorityExpiresAt.IsZero() {
 		return errors.New("invalid desired control identity")
 	}
 	return nil
@@ -140,6 +142,9 @@ func (s *Store) AcceptControl(a Approved, id string) error {
 			return err
 		}
 		if previous != nil {
+			if a.Control.ResyncRevision < previous.Control.ResyncRevision || a.Control.ProtocolVersion < previous.Control.ProtocolVersion || (previous.Control.DesiredState == "removed" && a.Control.DesiredState != "removed") {
+				return ErrConflictingControl
+			}
 			if previous.Binding.fingerprint() != a.Binding.fingerprint() {
 				return ErrConflictingControl
 			}
@@ -171,7 +176,7 @@ func (s *Store) AcceptControl(a Approved, id string) error {
 			if err != nil {
 				return err
 			}
-			if a.Control.DesiredState == "paused" {
+			if a.Control.DesiredState != "running" || (a.Control.ResyncRevision > 0 && (previous == nil || a.Control.ResyncRevision > previous.Control.ResyncRevision)) {
 				e.Owner.ExpiresAt = time.Now().UTC()
 			} else if time.Now().Before(e.Owner.ExpiresAt) {
 				e.Owner.ExpiresAt = a.Control.AuthorityExpiresAt
@@ -188,6 +193,13 @@ func managedAuthority(tx *bolt.Tx, run Generation) error {
 	}
 	if a == nil || a.Binding.fingerprint() != run.Fingerprint || a.Control.DesiredState != "running" || !time.Now().Before(a.Control.AuthorityExpiresAt) {
 		return errors.New("managed execution authority unavailable")
+	}
+	l, err := loadLifecycle(tx)
+	if err != nil {
+		return err
+	}
+	if l == nil || l.Removed || l.CompletedResyncRevision < a.Control.ResyncRevision {
+		return errors.New("lifecycle operation is pending")
 	}
 	e, err := loadExecution(tx)
 	if err != nil {
@@ -312,8 +324,14 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	if current.Binding.BindingID != s.Remote.BindingID {
 		return errors.New("cached binding does not match control bootstrap")
 	}
+
 	var cancel context.CancelFunc
 	var done chan error
+	var cleanupCancel context.CancelFunc
+	var cleanupDone chan error
+	var cleaning Approved
+	cleanupStopped := false
+	failedCleanupRevision := uint64(0)
 	stopRequested := false
 	minimumEpoch := uint64(0)
 	progress := make(chan Progress, 16)
@@ -326,25 +344,85 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			cancel()
 		}
 	}
+	stopCleanup := func() {
+		if cleanupCancel != nil {
+			cleanupStopped = true
+			cleanupCancel()
+		}
+	}
 	defer func() {
 		stopRun()
+		stopCleanup()
 		if done != nil {
 			<-done
+		}
+		if cleanupDone != nil {
+			<-cleanupDone
 		}
 	}()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	reconcile := func() error {
 		c := current.Control
+		inventory, e := s.Store.lifecycle()
+		if e != nil {
+			return e
+		}
+		if c.DesiredState == "removed" && inventory != nil && inventory.Removed {
+			phase = "removed"
+			return nil
+		}
 		if c.DesiredState == "paused" || !time.Now().Before(c.AuthorityExpiresAt) {
 			stopRun()
-			if done != nil {
+			stopCleanup()
+			s.Serving.clear()
+			if done != nil || cleanupDone != nil {
 				phase = "pausing"
 			} else if c.DesiredState == "paused" {
 				phase = "paused"
 			} else {
 				phase = "expired"
 			}
+			return nil
+		}
+		if cleanupDone != nil && (cleaning.Control.DesiredState != c.DesiredState || cleaning.Control.ResyncRevision != c.ResyncRevision) {
+			stopCleanup()
+		}
+		if lifecyclePending(c, inventory) {
+			stopRun()
+			s.Serving.clear()
+			if failedCleanupRevision == c.DesiredRevision {
+				phase = "action_required"
+				return nil
+			}
+			if c.DesiredState == "removed" {
+				phase = "removing"
+			} else {
+				phase = "resyncing"
+			}
+			if done == nil && cleanupDone == nil {
+				dsn, key := os.Getenv(current.Binding.SourceDSNEnv), os.Getenv(current.Binding.TargetKeyEnv)
+				if dsn == "" || key == "" {
+					failedCleanupRevision = c.DesiredRevision
+					phase = "action_required"
+					return nil
+				}
+				deadline := time.Now().Add(30 * time.Second)
+				if c.AuthorityExpiresAt.Before(deadline) {
+					deadline = c.AuthorityExpiresAt
+				}
+				cleanCtx, stop := context.WithDeadline(ctx, deadline)
+				cleanupCancel = stop
+				cleanupDone = make(chan error, 1)
+				cleanupStopped = false
+				cleaning = *current
+				completed, approved := cleanupDone, cleaning
+				target := NewLambdaTarget(approved.Binding, key)
+				go func() { completed <- s.Store.cleanup(cleanCtx, approved, dsn, target) }()
+			}
+			return nil
+		}
+		if cleanupDone != nil {
 			return nil
 		}
 		if done == nil && failedRevision != c.DesiredRevision {
@@ -377,6 +455,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		}
 		return nil
 	}
+
 	if err = reconcile(); err != nil {
 		return err
 	}
@@ -384,7 +463,28 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case err := <-cleanupDone:
+			cleanupDone = nil
+			if cleanupCancel != nil {
+				cleanupCancel()
+				cleanupCancel = nil
+			}
+			if err != nil && !cleanupStopped {
+				failedCleanupRevision = cleaning.Control.DesiredRevision
+				phase = "action_required"
+			}
+			cleanupStopped = false
+			if err == nil {
+				last = Progress{}
+				failedRevision = 0
+			}
+			if err = reconcile(); err != nil {
+				return err
+			}
 		case p := <-progress:
+			if stopRequested || cleanupDone != nil {
+				continue
+			}
 			e, eerr := s.Store.Execution()
 			if eerr != nil {
 				return eerr
@@ -434,7 +534,22 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			if e != nil {
 				return e
 			}
-			_ = s.Remote.Report(ctx, Observation{ProtocolVersion: 1, BindingID: current.Binding.BindingID, DesiredRevision: current.Control.DesiredRevision, Sequence: seq, Phase: phase, Epoch: last.Epoch, Generation: last.Generation, DurableLSN: last.DurableLSN, AppliedLSN: last.AppliedLSN, BarrierLSN: last.BarrierLSN})
+			inventory, e := s.Store.lifecycle()
+			if e != nil {
+				return e
+			}
+			completedResync := uint64(0)
+			if inventory != nil {
+				completedResync = inventory.CompletedResyncRevision
+			}
+			_ = s.Remote.Report(ctx, Observation{ProtocolVersion: current.Control.ProtocolVersion, CompletedResyncRevision: completedResync, BindingID: current.Binding.BindingID, DesiredRevision: current.Control.DesiredRevision, Sequence: seq, Phase: phase, Epoch: last.Epoch, Generation: last.Generation, DurableLSN: last.DurableLSN, AppliedLSN: last.AppliedLSN, BarrierLSN: last.BarrierLSN})
 		}
 	}
+}
+
+func validCommand(c Command) bool {
+	if c.ProtocolVersion == 1 {
+		return c.ResyncRevision == 0 && (c.DesiredState == "running" || c.DesiredState == "paused")
+	}
+	return c.ProtocolVersion == 2 && c.ResyncRevision <= c.DesiredRevision && (c.DesiredState == "running" || c.DesiredState == "paused" || c.DesiredState == "removed")
 }

@@ -136,11 +136,15 @@ func startManagedProcess(t *testing.T, binary string, f *fixture, m *processCont
 	return startManagedSearchProcess(t, binary, f, m, key, caPath, nil)
 }
 func startManagedSearchProcess(t *testing.T, binary string, f *fixture, m *processControl, key, caPath string, extra []string) *workerProcess {
+	return startManagedProcessAt(t, binary, f, m, key, caPath, extra, "")
+}
+func startManagedProcessAt(t *testing.T, binary string, f *fixture, m *processControl, key, caPath string, extra []string, point string) *workerProcess {
 	t.Helper()
-	p := &workerProcess{progress: make(chan Progress, 128), done: make(chan struct{}), seen: map[string]bool{}}
+	p := &workerProcess{progress: make(chan Progress, 128), done: make(chan struct{}), seen: map[string]bool{}, boundary: filepath.Join(t.TempDir(), "boundary")}
 	args := append([]string{"-control-url", m.server.URL, "-binding-id", f.c.BindingID, "-state", f.path}, extra...)
 	p.cmd = exec.Command(binary, args...)
 	p.cmd.Env = append(os.Environ(), "TEST_DSN="+f.dsn, "TEST_KEY="+key, "CDC_CONTROL_TOKEN="+m.token, "CDC_TEST_CA_FILE="+caPath, "CDC_SEARCH_TOKEN=synthetic-read-only-search-at-least-32-bytes")
+	p.cmd.Env = append(p.cmd.Env, "CDC_TEST_STOP_AT="+point, "CDC_TEST_BOUNDARY_FILE="+p.boundary)
 	stdout, err := p.cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
