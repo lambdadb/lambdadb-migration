@@ -23,7 +23,16 @@ func replicationConn(ctx context.Context, dsn string) (*pgconn.PgConn, error) {
 	return pgconn.ConnectConfig(ctx, c)
 }
 
-func preflight(ctx context.Context, conn *pgx.Conn, c Config) (uint32, []Column, error) {
+type sourceQuery interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+type tableColumn struct {
+	Column
+	Generated string
+}
+
+func inspectTable(ctx context.Context, conn sourceQuery, c Config, continuous bool) (uint32, []tableColumn, error) {
 	var oid uint32
 	var kind, identity string
 	var rls, partition bool
@@ -39,7 +48,7 @@ func preflight(ctx context.Context, conn *pgx.Conn, c Config) (uint32, []Column,
 	if err != nil {
 		return 0, nil, err
 	}
-	if kind != "r" || identity != "d" || rls || partition {
+	if kind != "r" || (continuous && identity != "d") || rls || partition {
 		return 0, nil, errors.New("ordinary non-RLS, non-partitioned table with default replica identity required")
 	}
 	rows, err := conn.Query(ctx, `SELECT a.attname,a.atttypid,a.atttypmod,
@@ -50,10 +59,7 @@ func preflight(ctx context.Context, conn *pgx.Conn, c Config) (uint32, []Column,
 		return 0, nil, err
 	}
 	defer rows.Close()
-	var tableColumns []struct {
-		Column
-		Generated string
-	}
+	var tableColumns []tableColumn
 	keys := 0
 	for rows.Next() {
 		var col Column
@@ -64,10 +70,7 @@ func preflight(ctx context.Context, conn *pgx.Conn, c Config) (uint32, []Column,
 		if col.Key {
 			keys++
 		}
-		tableColumns = append(tableColumns, struct {
-			Column
-			Generated string
-		}{col, generated})
+		tableColumns = append(tableColumns, tableColumn{col, generated})
 	}
 	if err := rows.Err(); err != nil {
 		return 0, nil, err
@@ -75,6 +78,14 @@ func preflight(ctx context.Context, conn *pgx.Conn, c Config) (uint32, []Column,
 	rows.Close()
 	if keys != 1 {
 		return 0, nil, errors.New("single-column primary key required")
+	}
+	return oid, tableColumns, nil
+}
+
+func preflight(ctx context.Context, conn *pgx.Conn, c Config) (uint32, []Column, error) {
+	oid, tableColumns, err := inspectTable(ctx, conn, c, true)
+	if err != nil {
+		return 0, nil, err
 	}
 	var all, ins, upd, del, trunc bool
 	if err := conn.QueryRow(ctx, `SELECT puballtables,pubinsert,pubupdate,pubdelete,pubtruncate FROM pg_publication WHERE pubname=$1`, c.Publication).Scan(&all, &ins, &upd, &del, &trunc); err != nil {
@@ -109,13 +120,18 @@ func preflight(ctx context.Context, conn *pgx.Conn, c Config) (uint32, []Column,
 	if count != 1 {
 		return 0, nil, errors.New("publication must select exactly one table")
 	}
+	cols, err := selectColumns(tableColumns, published)
+	return oid, cols, err
+}
+
+func selectColumns(tableColumns []tableColumn, published []string) ([]Column, error) {
 	// pgoutput emits selected columns in table attribute order, independent of
 	// the order in CREATE PUBLICATION. Use that exact projection for snapshot,
 	// row reconstruction and drift checks. Unpublished types/values are irrelevant.
 	selected := make(map[string]bool, len(published))
 	for _, column := range published {
 		if selected[column] {
-			return 0, nil, errors.New("duplicate publication column")
+			return nil, errors.New("duplicate publication column")
 		}
 		selected[column] = true
 	}
@@ -127,29 +143,29 @@ func preflight(ctx context.Context, conn *pgx.Conn, c Config) (uint32, []Column,
 			continue
 		}
 		if entry.Generated != "" {
-			return 0, nil, errors.New("selected generated columns unsupported")
+			return nil, errors.New("selected generated columns unsupported")
 		}
 		if !supportedOID(col.OID) {
-			return 0, nil, fmt.Errorf("unsupported source type OID %d", col.OID)
+			return nil, fmt.Errorf("unsupported source type OID %d", col.OID)
 		}
 		if col.Key {
 			selectedKey = true
 			if col.OID != 20 && col.OID != 21 && col.OID != 23 && col.OID != 25 && col.OID != 1043 && col.OID != 2950 {
-				return 0, nil, errors.New("primary key must be integer, text or uuid")
+				return nil, errors.New("primary key must be integer, text or uuid")
 			}
 		}
 		if col.Name == "id" && !col.Key {
-			return 0, nil, errors.New("non-key id column conflicts with target id")
+			return nil, errors.New("non-key id column conflicts with target id")
 		}
 		cols = append(cols, col)
 	}
 	if len(cols) != len(selected) {
-		return 0, nil, errors.New("publication column mismatch")
+		return nil, errors.New("publication column mismatch")
 	}
 	if !selectedKey {
-		return 0, nil, errors.New("publication must include primary key")
+		return nil, errors.New("publication must include primary key")
 	}
-	return oid, cols, nil
+	return cols, nil
 }
 
 func supportedOID(oid uint32) bool {
@@ -248,7 +264,11 @@ func snapshot(ctx context.Context, sql *pgx.Conn, repl *pgconn.PgConn, store *St
 	if _, err = tx.Exec(ctx, "SET TRANSACTION SNAPSHOT '"+strings.ReplaceAll(result.SnapshotName, "'", "''")+"'"); err != nil {
 		return nil, err
 	}
-	if _, err = tx.Exec(ctx, "LOCK TABLE "+pgx.Identifier{c.Schema, c.Table}.Sanitize()+" IN ACCESS SHARE MODE"); err != nil {
+	names := make([]string, len(cols))
+	for i, col := range cols {
+		names[i] = col.Name
+	}
+	if err = lockSnapshotProjection(ctx, tx, c.Schema, c.Table, names); err != nil {
 		return nil, err
 	}
 	lockedOID, lockedCols, err := preflight(ctx, sql, c)
@@ -263,6 +283,23 @@ func snapshot(ctx context.Context, sql *pgx.Conn, repl *pgconn.PgConn, store *St
 			return nil, err
 		}
 	}
+	state := &State{Format: 1, Fingerprint: c.fingerprint(), SystemID: sys.SystemID, Timeline: sys.Timeline, Database: sys.DBName, RelationID: oid, Columns: cols, Rows: map[string]Row{}}
+	lsn, err := pglogrepl.ParseLSN(result.ConsistentPoint)
+	if err != nil {
+		return nil, err
+	}
+	state.LSN = uint64(lsn)
+	state.Rows, err = readSnapshotRows(ctx, tx, c, cols)
+	if err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return state, nil
+}
+
+func readSnapshotRows(ctx context.Context, tx pgx.Tx, c Config, cols []Column) (map[string]Row, error) {
 	parts := make([]string, len(cols))
 	for i, col := range cols {
 		parts[i] = pgx.Identifier{col.Name}.Sanitize() + "::text"
@@ -272,12 +309,7 @@ func snapshot(ctx context.Context, sql *pgx.Conn, repl *pgconn.PgConn, store *St
 		return nil, err
 	}
 	defer rows.Close()
-	state := &State{Format: 1, Fingerprint: c.fingerprint(), SystemID: sys.SystemID, Timeline: sys.Timeline, Database: sys.DBName, RelationID: oid, Columns: cols, Rows: map[string]Row{}}
-	lsn, err := pglogrepl.ParseLSN(result.ConsistentPoint)
-	if err != nil {
-		return nil, err
-	}
-	state.LSN = uint64(lsn)
+	data := map[string]Row{}
 	bytes := 0
 	for rows.Next() {
 		values := make([]*string, len(cols))
@@ -304,9 +336,9 @@ func snapshot(ctx context.Context, sql *pgx.Conn, repl *pgconn.PgConn, store *St
 		if err != nil {
 			return nil, err
 		}
-		state.Rows[id] = row
+		data[id] = row
 		processBoundary("snapshot_row")
-		if len(state.Rows) > MaxRows || bytes > MaxStateBytes/2 {
+		if len(data) > MaxRows || bytes > MaxStateBytes/2 {
 			return nil, errors.New("snapshot budget exceeded")
 		}
 	}
@@ -314,10 +346,7 @@ func snapshot(ctx context.Context, sql *pgx.Conn, repl *pgconn.PgConn, store *St
 		return nil, err
 	}
 	rows.Close()
-	if err = tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-	return state, nil
+	return data, nil
 }
 
 func validateResume(ctx context.Context, sql *pgx.Conn, repl *pgconn.PgConn, c Config, s *State) error {

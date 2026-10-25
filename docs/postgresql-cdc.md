@@ -432,3 +432,25 @@ authority handling and a deliberately unconfirmed manifest template. Keep real
 manifests, state copies and evidence out of source control. Maintained tests include
 actual CLI SIGKILL before/after the bbolt commit and subsequent central-authorized
 owned-only cleanup with real local PostgreSQL and a TLS supported-SDK fixture.
+
+## SQL-only snapshot reader
+
+`postgrescdc.ReadSnapshot` reads a bounded, repeatable-read source cut with ordinary
+SELECT privileges. It creates neither a publication nor a logical slot and returns
+only after the complete read transaction commits. Explicit columns must include
+the single primary key and obey the same type/generated-column and `id` mapping
+rules as continuous capture. An omitted column list selects all table columns.
+Snapshot mode can use non-default replica identity because it does not decode WAL.
+
+The projected `SELECT ... LIMIT 0` retains the source relation's ACCESS SHARE lock
+through the transaction, including when the credential can SELECT only chosen
+columns. Explicit `LOCK TABLE` would require wider table privileges. Both snapshot
+readers reuse projection validation and row decoding; their existing 10,000-row /
+regional-state budgets remain in force. The source's later commits are excluded
+from the returned baseline. A new invocation establishes a new cut; the future
+connection runner must persist the complete baseline before target application
+and must not re-invoke this reader on an ordinary completed-snapshot restart.
+
+This source-reader stage is exercised locally, including a NOREPLICATION login
+with column-only grants and no publication. It is not yet a `connection-worker`
+CLI, target application, restart journal or a deployed snapshot import feature.
