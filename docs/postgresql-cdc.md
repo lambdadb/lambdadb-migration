@@ -1,5 +1,11 @@
 # PostgreSQL CDC correctness spike
 
+> The October 26 accepted product direction is defined in the backend repository's
+> `docs/CONNECTIONS.md`: self-service generic connections, snapshot/continuous modes,
+> publication column parity, a fixed normal customer collection and ordinary SDK
+> search. Historical new-generation and search-gate behavior below is still present
+> in code until its replacement is validated; it is not the new product default.
+
 This separate executable, connector implementation, correctness tests and worker
 image are owned by `lambdadb-migration`. The management API remains central in
 `lambdadb-backend`, which also owns regional infrastructure and deployment
