@@ -119,26 +119,49 @@ func (s *Store) Load() (*State, error) {
 		if err := json.Unmarshal(v, &state); err != nil {
 			return errors.New("corrupt regional state; resync required")
 		}
-		if state == nil || state.Format != 1 || state.Rows == nil || state.LSN == 0 || len(state.Columns) == 0 || state.Fingerprint == "" || state.SystemID == "" {
-			return errors.New("invalid regional state; resync required")
-		}
-		if len(state.Rows) > MaxRows {
-			return errors.New("regional row budget exceeded")
-		}
-		for id, row := range state.Rows {
-			actual, err := rowID(row, state.Columns)
-			if err != nil || actual != id || len(row) != len(state.Columns) {
-				return errors.New("corrupt regional row image; resync required")
-			}
-			for _, col := range state.Columns {
-				if !supportedOID(col.OID) || !json.Valid(row[col.Name]) {
-					return errors.New("invalid regional column; resync required")
-				}
-			}
-		}
-		return nil
+		return validateState(state)
 	})
 	return state, err
+}
+func validateState(state *State) error {
+	if state == nil || state.Format != 1 || state.LSN == 0 || state.Fingerprint == "" || state.SystemID == "" {
+		return errors.New("invalid regional state; resync required")
+	}
+	return validateRows(state.Columns, state.Rows)
+}
+func validateRows(columns []Column, rows map[string]Row) error {
+	if rows == nil || len(columns) == 0 {
+		return errors.New("invalid regional row image")
+	}
+	if len(rows) > MaxRows {
+		return errors.New("regional row budget exceeded")
+	}
+	keys := 0
+	names := map[string]bool{}
+	for _, column := range columns {
+		if names[column.Name] || column.Name == "" || !supportedOID(column.OID) {
+			return errors.New("invalid regional columns")
+		}
+		names[column.Name] = true
+		if column.Key {
+			keys++
+		}
+	}
+	if keys != 1 {
+		return errors.New("single regional primary key required")
+	}
+	for id, row := range rows {
+		actual, err := rowID(row, columns)
+		if err != nil || actual != id || len(row) != len(columns) {
+			return errors.New("corrupt regional row image; resync required")
+		}
+		for _, column := range columns {
+			if !json.Valid(row[column.Name]) {
+				return errors.New("invalid regional column; resync required")
+			}
+		}
+	}
+	return nil
 }
 func (s *Store) Save(state *State) error {
 	return s.save(state, nil)

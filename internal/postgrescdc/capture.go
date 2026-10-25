@@ -123,6 +123,72 @@ func (c *Capture) initialize(ctx context.Context, dsn string, allowNew bool) (*S
 	}
 	return state, nil
 }
+
+// Resnapshot is an explicit operator-requested cut. It verifies the retained
+// source identity and projection, but can replace a lost/invalid owned slot.
+// The current checkpoint is untouched until PromotePreparedCut succeeds.
+func (c *Capture) Resnapshot(ctx context.Context, dsn string) (*State, error) {
+	config, err := c.Selection.config()
+	if err != nil {
+		return nil, err
+	}
+	old, err := c.Store.Load()
+	if err != nil {
+		return nil, err
+	}
+	if old == nil || old.Fingerprint != config.fingerprint() {
+		return nil, errors.New("retained source ownership required for resync")
+	}
+	sql, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		return nil, err
+	}
+	defer sql.Close(context.Background())
+	repl, err := replicationConn(ctx, dsn)
+	if err != nil {
+		return nil, err
+	}
+	defer repl.Close(context.Background())
+	system, err := pglogrepl.IdentifySystem(ctx, repl)
+	if err != nil {
+		return nil, err
+	}
+	oid, cols, err := preflight(ctx, sql, config)
+	if err != nil {
+		return nil, err
+	}
+	if system.SystemID != old.SystemID || system.Timeline != old.Timeline || system.DBName != old.Database || oid != old.RelationID || !reflect.DeepEqual(cols, old.Columns) || !c.Selection.matches(cols) {
+		return nil, errors.New("source identity or projection changed; new connection required")
+	}
+	if err = c.Store.saveBootstrap(bootstrap{Fingerprint: old.Fingerprint, SystemID: old.SystemID, Timeline: old.Timeline, Database: old.Database}); err != nil {
+		return nil, err
+	}
+	return snapshot(ctx, sql, repl, c.Store, config, nil)
+}
+
+// ValidateCut checks that a prepared exported snapshot can still be followed by
+// its exact logical stream. No target write should precede this check on restart.
+func (c *Capture) ValidateCut(ctx context.Context, dsn string, state *State) error {
+	config, err := c.Selection.config()
+	if err != nil {
+		return err
+	}
+	if state == nil || !c.Selection.matches(state.Columns) {
+		return errors.New("source cut selection changed")
+	}
+	sql, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		return err
+	}
+	defer sql.Close(context.Background())
+	repl, err := replicationConn(ctx, dsn)
+	if err != nil {
+		return err
+	}
+	defer repl.Close(context.Background())
+	return validateResume(ctx, sql, repl, config, state)
+}
+
 func (c *Capture) Stream(ctx context.Context, dsn string, apply func(context.Context, *State, *State) error, ready func()) error {
 	config, err := c.Selection.config()
 	if err != nil {
