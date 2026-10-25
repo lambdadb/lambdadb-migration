@@ -1,0 +1,39 @@
+name: CDC correctness spike
+on:
+  pull_request:
+    paths:
+      - "internal/postgrescdc/**"
+      - "cmd/cdc-worker/**"
+      - "scripts/cdc-test-*"
+      - "Dockerfile.cdc-worker"
+      - "go.mod"
+      - "go.sum"
+      - ".dockerignore"
+      - ".github/workflows/cdc-check.yml"
+  push:
+    branches: [main]
+    paths:
+      - "internal/postgrescdc/**"
+      - "cmd/cdc-worker/**"
+      - "scripts/cdc-test-*"
+      - "Dockerfile.cdc-worker"
+      - "go.mod"
+      - "go.sum"
+      - ".dockerignore"
+      - ".github/workflows/cdc-check.yml"
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - run: bash scripts/cdc-test-postgres.sh
+      - run: go vet ./...
+      - run: go build ./...
+      - run: docker build -f Dockerfile.cdc-worker -t lambdadb-cdc-worker:ci .
+      - run: docker run --rm lambdadb-cdc-worker:ci -help

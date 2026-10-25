@@ -4,6 +4,12 @@ CLI tooling for migrating vector databases and search systems into LambdaDB.
 
 Supported sources include Qdrant, Pinecone Serverless, and Elasticsearch. LambdaDB is the only target.
 
+The repository also owns the separate [PostgreSQL CDC worker](docs/postgresql-cdc.md)
+and its correctness tests. Managed connection APIs and regional infrastructure stay
+in `lambdadb-backend`; the worker performs snapshot and continuous replication
+without per-batch central calls. PostgreSQL is not yet a migration CLI subcommand.
+The CDC executable/image is separate from the CLI and its release archives.
+
 ## Quickstart
 
 Install the latest release:
@@ -332,7 +338,7 @@ Useful migration safety flags:
 
 Generated inventory mappings set `target.createCollection: true` by default, so the migration creates the LambdaDB collection when it is missing. Use `--migration.create-collection=false` to require the target collection to exist, or `--migration.create-collection=true` to override a mapping file that has collection creation disabled.
 
-The target uses LambdaDB Go SDK `v0.7.0`. Collection creation returns HTTP 201 with collection metadata; the current API has no `collectionStatus` readiness field to poll. Transient write errors use the configured retry policy. Bulk uploads forward the signed headers returned by LambdaDB (including `If-None-Match: *`) and send `Content-Type: application/json`. A retried upload obtains a fresh URL; checkpoints advance only after every write for a source batch succeeds.
+The target uses LambdaDB Go SDK `v0.7.1`. Collection creation returns HTTP 201 with collection metadata; the current API has no `collectionStatus` readiness field to poll. Transient write errors use the configured retry policy. Bulk uploads forward the signed headers returned by LambdaDB (including `If-None-Match: *`) and send `Content-Type: application/json`. A retried upload obtains a fresh URL; checkpoints advance only after every write for a source batch succeeds.
 
 Checkpoints record source exhaustion separately from validation success. Re-running a completed checkpoint skips source reads and writes, while requested validation and cleanup still run. Validation-enabled migrations retain up to `--migration.validation-sample-size` sample documents in the local checkpoint so failed validation can be retried without re-uploading; checkpoint files use owner-only permissions. If a completed checkpoint has no saved samples, requesting sample validation requires `--migration.restart` (or sample size `0` for count-only validation).
 
