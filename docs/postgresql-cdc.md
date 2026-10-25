@@ -454,3 +454,36 @@ and must not re-invoke this reader on an ordinary completed-snapshot restart.
 This source-reader stage is exercised locally, including a NOREPLICATION login
 with column-only grants and no publication. It is not yet a `connection-worker`
 CLI, target application, restart journal or a deployed snapshot import feature.
+
+## Fixed-target intent journal and API transport
+
+`internal/connections` is a new common regional execution package. Its bbolt
+journal requires explicit one-time initialization; restart opens an existing file
+without `O_CREATE`, rejects uninitialized/changed state, and retains exclusive
+single-volume ownership. It persists a complete upsert/delete intent and sequence
+before sending. Exact target acknowledgment clears that intent atomically; an
+uncertain outcome remains pending and must be recovered before another operation.
+JSON content retains integer precision and canonical escaping across persistence.
+
+The target transport uses the documented document HTTP API paths and existing
+`x-api-key` authentication. Shared gateways additionally receive the registered
+native project ID and version. It sends optional `ingestion` metadata and requires
+a matching 202 acceptance echo; generic success, wrong order and redirects never
+advance the journal. Normal application does not call Fetch or a central backend.
+The existing Go SDK remains available for ordinary collection operations; its
+current generated mutation DTOs do not yet expose this engine extension.
+
+The pure metadata protocol is mirrored from the backend's internal connections
+protocol because independently built repositories cannot import Go internal
+packages. Keep its wire version, field names and validation aligned when changing
+it. Source adapters keep source positions inside the common source-type/offset
+shape. The new journal/transport is not yet a runnable managed worker: target
+ownership, producer sealing, source capture orchestration and lifecycle receipts
+still need integration. The older worker retains its historical generation flow.
+
+Validation includes real subprocess SIGKILL before/after acknowledgment, missing
+state, exclusive access, large integer/escaped content, response loss, wrong
+acknowledgment and redirect behavior. HTTP transport fixtures prove the client
+contract, not deployed engine support; durable ordering is independently tested
+in the engine's EfsBranchWal/WriterMutationCommitter tests. No new ordered API was
+deployed to the Seoul endpoint by these changes.
