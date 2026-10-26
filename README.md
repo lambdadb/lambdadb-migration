@@ -248,7 +248,7 @@ Elasticsearch point-in-time IDs can expire. If a resumed migration fails because
 ## Text Analyzer Mappings
 
 Text indexes support the 49 fixed presets from LambdaDB server merge
-`55d888299fee44466326a9db8016af9811ade13b` (PR #437), retained in Go SDK v0.7.0:
+`55d888299fee44466326a9db8016af9811ade13b` (PR #437), retained in Go SDK v0.7.2:
 
 ```text
 standard english korean japanese arabic chinese cjk french german hindi
@@ -332,7 +332,7 @@ Useful migration safety flags:
 
 Generated inventory mappings set `target.createCollection: true` by default, so the migration creates the LambdaDB collection when it is missing. Use `--migration.create-collection=false` to require the target collection to exist, or `--migration.create-collection=true` to override a mapping file that has collection creation disabled.
 
-The target uses LambdaDB Go SDK `v0.7.0`. Collection creation returns HTTP 201 with collection metadata; the current API has no `collectionStatus` readiness field to poll. Transient write errors use the configured retry policy. Bulk uploads forward the signed headers returned by LambdaDB (including `If-None-Match: *`) and send `Content-Type: application/json`. A retried upload obtains a fresh URL; checkpoints advance only after every write for a source batch succeeds.
+The target uses LambdaDB Go SDK `v0.7.2`. Collection creation returns HTTP 201 with collection metadata; the current API has no `collectionStatus` readiness field to poll. Transient write errors use the configured retry policy. Bulk uploads forward the signed headers returned by LambdaDB (including `If-None-Match: *`) and send `Content-Type: application/json`. A retried upload obtains a fresh URL; checkpoints advance only after every write for a source batch succeeds.
 
 Checkpoints record source exhaustion separately from validation success. Re-running a completed checkpoint skips source reads and writes, while requested validation and cleanup still run. Validation-enabled migrations retain up to `--migration.validation-sample-size` sample documents in the local checkpoint so failed validation can be retried without re-uploading; checkpoint files use owner-only permissions. If a completed checkpoint has no saved samples, requesting sample validation requires `--migration.restart` (or sample size `0` for count-only validation).
 
@@ -407,8 +407,11 @@ payload:
 ## Native Embedding Mappings
 
 Go SDK [v0.7.0](https://github.com/lambdadb/go-lambdadb/releases/tag/v0.7.0)
-(tag commit `fd3000bcb4353b3d6ed23fcca4f111955b36b33e`) supports the native
+(tag commit `fd3000bcb4353b3d6ed23fcca4f111955b36b33e`) introduced the native
 embedding contract pinned to backend `9072a1bc8925954369a887f558f1eaf387b7ea0e`.
+The target now uses [v0.7.2](https://github.com/lambdadb/go-lambdadb/releases/tag/v0.7.2),
+which preserves these request types; see its [current API contract](https://github.com/lambdadb/go-lambdadb/blob/v0.7.2/docs/api-contract.md)
+for updated server limits and constraints.
 To explicitly generate an additional vector from migrated text, add this to a
 reviewed mapping and select `--migration.write-mode upsert` (JSON input is also
 supported):
@@ -477,7 +480,7 @@ omits top-level `candidateSize` and rerank, preserves server result order, and
 cannot validate a native field via `queryVector`. There are no Bayesian queries,
 rerank requests or score-processing paths to migrate here; Bayesian is not a
 migration default. For separate SDK queries, follow the
-[Bayesian/native embedding guide](https://github.com/lambdadb/go-lambdadb/blob/v0.7.0/docs/bayesian-native-embeddings.md).
+[Bayesian/native embedding guide](https://github.com/lambdadb/go-lambdadb/blob/v0.7.2/docs/bayesian-native-embeddings.md).
 
 The SDK's dev validation does not establish this CLI's target deployment. Before
 live migration, verify the actual running backend revision and compatible schema.
