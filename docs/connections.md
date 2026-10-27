@@ -199,3 +199,35 @@ prepared-but-unsent continuation, uncertain collection creation, ordinary insert
 update/delete, source-checkpoint preservation and legacy journal rejection.
 No cloud deployment, live Seoul test, production load or native-image validation
 is included in these results.
+
+## Local worker against the live Seoul API, October 28, 2026
+
+A scoped live run used actual local `connection-regional` and `connection-worker`
+executables, an isolated PostgreSQL 17 source and the existing Seoul v3 data-plane
+endpoint. The worker was built from migration `1c15d0f`; regional control was built
+from backend `1356e0d`. Only unique, previously absent test collections were used.
+The worker called ordinary collection/upsert/delete APIs. A separate validation
+runner compared every committed document and field through the public list API;
+these reads are test assertions, not per-batch worker verification.
+
+Nine checks passed: continuous initial snapshot/projection, insert/update/delete,
+retained-state restart with offline PK changes and delete/reinsert, pause/resume,
+continuous disconnect and terminal restart without source/target credentials,
+snapshot-only import, completed snapshot restart without importing later changes,
+explicit resync in the same collection, and snapshot disconnect/terminal restart.
+The initial large bigint PK was preserved exactly as both the string document ID
+and selected numeric source field. Excluded source fields were absent. Both final
+collections were deleted with HTTP 200 and subsequent HTTP 404 was verified. An
+initial runner attempt had a process-observation ordering error; its test
+collection was also confirmed absent. Local processes and containers were removed.
+
+This verifies ordinary live API compatibility and bounded data correctness, not
+production deployment, throughput or a freshness SLA. Initial live source data was
+quiescent; concurrent exported-snapshot handoff and uncertain-request faults remain
+covered by separate local tests. Local regional desired metadata was published
+directly for this run; central JWT registration, AWS Secrets Manager/IAM, managed
+worker scheduling, fixed egress, shared-gateway native project-ID routing, remote
+state/HA, and a live ambiguous-write recovery scenario were not exercised. No
+engine change, private target, request-idempotency facility or EFS receipt feature
+was required. Secret values, retained execution state and one-off validation
+scripts/logs remain outside source control.
