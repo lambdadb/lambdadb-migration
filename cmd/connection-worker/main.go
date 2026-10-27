@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -22,10 +23,28 @@ func main() {
 	state := flag.String("state-dir", "", "retained per-connection regional state directory")
 	region := flag.String("region", os.Getenv("AWS_REGION"), "worker region (defaults to approved target region)")
 	initialize := flag.Bool("initialize", false, "one-time initialization for a newly registered connection")
+	inspect := flag.Bool("inspect-state", false, "inspect a stopped worker's retained state read-only; never authorize resume")
 	localSecrets := flag.Bool("allow-environment-secrets", false, "allow env references for isolated local testing")
 	insecureSource := flag.Bool("allow-insecure-source", false, "allow plaintext PostgreSQL for isolated local testing")
 	caFile := flag.String("ca-file", "", "additional trusted CA PEM for regional/target HTTPS")
 	flag.Parse()
+	if *inspect {
+		if *initialize {
+			fmt.Fprintln(os.Stderr, "inspection cannot initialize state")
+			os.Exit(1)
+		}
+		out, err := connections.InspectState(*state)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "connection state inspection failed:", err)
+			os.Exit(1)
+		}
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetIndent("", "  ")
+		if err = encoder.Encode(out); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
 	control, err := connections.NewControl(*origin, *id, os.Getenv("CONNECTION_WORKER_CREDENTIAL"))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

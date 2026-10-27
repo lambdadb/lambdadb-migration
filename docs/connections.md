@@ -231,3 +231,20 @@ state/HA, and a live ambiguous-write recovery scenario were not exercised. No
 engine change, private target, request-idempotency facility or EFS receipt feature
 was required. Secret values, retained execution state and one-off validation
 scripts/logs remain outside source control.
+
+
+## Incident inspection
+
+Stop the worker and its automatic restarts, then inspect the retained journal and
+source files together without control or AWS credentials:
+
+```sh
+connection-worker -inspect-state -state-dir /retained/connection
+```
+
+The result is bounded local metadata with request content, document IDs and secret
+references excluded. Both files are opened read-only; missing/corrupt/locked or
+mismatched state is refused. `resume_authorized` is always false. The command does
+not initialize, clear uncertainty, retry or contact a service. Follow the
+[incident inspection and recovery procedure](connection-recovery.md); current
+reads or elapsed time cannot authorize recovery from an uncertain remote write.
