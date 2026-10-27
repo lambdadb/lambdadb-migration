@@ -286,3 +286,16 @@ ECS address and NFS port; normal worker code is unchanged. API success must be
 accompanied by blocked synchronous I/O. A stale handle's successful write while
 a replacement owns the journal is a storage fencing failure, not a reason to
 automatically retry or add connector-specific engine behavior.
+
+The actual October 28 partition experiment blocked NFS I/O and admitted a
+replacement file owner while the old task remained alive. After reconnect, the
+old transaction returned an error; explicit reuse of that handle caused SIGBUS
+inside bbolt. The failed journal was archived read-only. Fresh cross-AZ and local
+verifiers retained accepted sequence 2, both managed IDs and no pending intent;
+the archived journal also retained baseline writer data. No stale-write success
+or durable regression was observed.
+This is storage-probe evidence, not an actual replication-worker run or a reason
+to change the engine. Normal storage remains unchanged. Live-owner takeover is
+unqualified; actual worker replacement awaits an explicit handover/I/O-error
+policy, including confirmation of the old task's STOPPED state for a singleton
+approach. All owned cloud resources were cleaned up after evidence preservation.
