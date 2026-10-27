@@ -160,8 +160,11 @@ func (o Observation) Validate(id string) bool {
 		return false
 	}
 	switch o.ReasonCode {
-	case "", "source_unreachable", "source_authentication_failed", "source_tls_failed", "source_setup_required", "source_schema_changed", "source_continuity_lost", "target_unavailable", "target_conflict", "state_volume_missing", "state_invalid", "authority_expired", "unsupported_source", "operation_failed":
+	case "", "source_unreachable", "source_authentication_failed", "source_tls_failed", "source_setup_required", "source_schema_changed", "source_continuity_lost", "target_unavailable", "target_conflict", "target_outcome_uncertain", "target_rejected", "state_volume_missing", "state_invalid", "authority_expired", "unsupported_source", "operation_failed":
 	default:
+		return false
+	}
+	if (o.ReasonCode == "target_outcome_uncertain" || o.ReasonCode == "target_rejected") && o.Phase != "action_required" {
 		return false
 	}
 	return o.Position == nil || (o.Position.SourceType == "postgresql" && postgresOffset.MatchString(o.Position.Offset))

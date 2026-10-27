@@ -20,12 +20,15 @@ func (w *Worker) ensureTarget(ctx context.Context, target *APITarget) error {
 	if err != nil {
 		return err
 	}
+	if d.CreationAttempt && !d.TargetCreated {
+		return ErrTargetOutcomeUncertain
+	}
 	meta, err := target.Describe(ctx)
 	if err != nil {
 		return errors.New("target_unavailable")
 	}
 	if meta != nil {
-		if !d.CreationAttempt || meta.ConnectionID != d.Approved.Binding.ConnectionID || meta.DisconnectedAt != nil {
+		if !d.TargetCreated {
 			return errors.New("target_conflict")
 		}
 		return nil
@@ -42,13 +45,22 @@ func (w *Worker) ensureTarget(ctx context.Context, target *APITarget) error {
 		return err
 	}
 	if err = target.CreateOnce(ctx); err != nil {
-		return errors.New("target_unavailable")
+		if errors.Is(err, ErrTargetRejected) {
+			if e := w.update(func(d *workerData) error { d.CreationAttempt = false; return nil }); e != nil {
+				return ErrTargetOutcomeUncertain
+			}
+			return err
+		}
+		return ErrTargetOutcomeUncertain
+	}
+	if err = w.update(func(d *workerData) error { d.TargetCreated = true; return nil }); err != nil {
+		return ErrTargetOutcomeUncertain
 	}
 	meta, err = target.Describe(ctx)
 	if err != nil {
 		return errors.New("target_unavailable")
 	}
-	if meta == nil || meta.ConnectionID != d.Approved.Binding.ConnectionID || meta.DisconnectedAt != nil {
+	if meta == nil {
 		return errors.New("target_conflict")
 	}
 	return nil
@@ -242,7 +254,7 @@ func (w *Worker) delete(ctx context.Context, target IntentTarget, id string) err
 	}
 	raw, _ := json.Marshal(map[string]any{"ids": []string{id}})
 	if err := w.journal.Apply(ctx, target, "delete", raw); err != nil {
-		return errors.New("target_unavailable")
+		return err
 	}
 	return nil
 }
@@ -260,7 +272,7 @@ func (w *Worker) put(ctx context.Context, target IntentTarget, id string, row po
 		return errors.New("state_invalid")
 	}
 	if err = w.journal.Apply(ctx, target, "upsert", raw); err != nil {
-		return errors.New("target_unavailable")
+		return err
 	}
 	return nil
 }

@@ -16,11 +16,14 @@ import (
 
 const MaxStateBytes = 32 << 20
 const MaxManagedRows = 10000
-const journalFormat = 2
+const journalFormat = 3
 
-var ErrPending = errors.New("a durable target intent must be recovered first")
+var ErrPending = errors.New("a durable target intent is pending")
+var ErrTargetOutcomeUncertain = errors.New("target_outcome_uncertain")
+var ErrTargetRejected = errors.New("target_rejected")
 
 type Intent struct {
+	Status    string          `json:"status"`
 	Sequence  uint64          `json:"sequence"`
 	Operation string          `json:"operation"`
 	Content   json.RawMessage `json:"content"`
@@ -119,7 +122,7 @@ func (j *Journal) decode(tx *bolt.Tx) (*State, error) {
 }
 func validIntent(p Intent) bool {
 	_, err := intentID(p)
-	return p.Sequence > 0 && p.Sequence <= math.MaxInt64 && err == nil && p.Digest == intentDigest(p.Operation, p.Content)
+	return (p.Status == "prepared" || p.Status == "sending" || p.Status == "rejected") && p.Sequence > 0 && p.Sequence <= math.MaxInt64 && err == nil && p.Digest == intentDigest(p.Operation, p.Content)
 }
 
 // First delivery applies one document per intent. Keep the ownership inventory
@@ -186,7 +189,7 @@ func (j *Journal) SaveData(data json.RawMessage) error {
 	})
 }
 
-// Prepare durably assigns the sequence to the complete immutable operation before
+// Prepare durably assigns a local journal sequence to the complete immutable operation before
 // any network send. Caller content is compacted, never passed through float64.
 func (j *Journal) Prepare(operation string, content json.RawMessage) (*Intent, error) {
 	canonical, err := json.Marshal(content)
@@ -205,7 +208,7 @@ func (j *Journal) Prepare(operation string, content json.RawMessage) (*Intent, e
 		if s.AcceptedSequence >= math.MaxInt64 {
 			return errors.New("target sequence exhausted")
 		}
-		p := Intent{Sequence: s.AcceptedSequence + 1, Operation: operation, Content: bytes.Clone(canonical)}
+		p := Intent{Status: "prepared", Sequence: s.AcceptedSequence + 1, Operation: operation, Content: bytes.Clone(canonical)}
 		p.Digest = intentDigest(operation, p.Content)
 		if !validIntent(p) {
 			return errors.New("invalid target operation")
@@ -221,6 +224,56 @@ func (j *Journal) Prepare(operation string, content json.RawMessage) (*Intent, e
 	return intent, err
 }
 
+// PendingError never sends a request. A sending intent can already have reached
+// the target; neither restart nor a changed management command can retry it.
+func (j *Journal) PendingError() error {
+	s, err := j.Load()
+	if err != nil {
+		return err
+	}
+	if s.Pending != nil {
+		switch s.Pending.Status {
+		case "sending":
+			return ErrTargetOutcomeUncertain
+		case "rejected":
+			return ErrTargetRejected
+		}
+	}
+	return nil
+}
+
+func sameIntent(a, b Intent) bool {
+	return a.Sequence == b.Sequence && a.Digest == b.Digest && a.Operation == b.Operation && bytes.Equal(a.Content, b.Content)
+}
+
+func (j *Journal) markSending(intent Intent) error {
+	return j.db.Update(func(tx *bolt.Tx) error {
+		s, err := j.decode(tx)
+		if err != nil {
+			return err
+		}
+		if s.Pending == nil || !sameIntent(*s.Pending, intent) || s.Pending.Status != "prepared" {
+			return ErrPending
+		}
+		s.Pending.Status = "sending"
+		return j.write(tx, s)
+	})
+}
+
+func (j *Journal) reject(intent Intent) error {
+	return j.db.Update(func(tx *bolt.Tx) error {
+		s, err := j.decode(tx)
+		if err != nil {
+			return err
+		}
+		if s.Pending == nil || !sameIntent(*s.Pending, intent) || s.Pending.Status != "sending" {
+			return ErrPending
+		}
+		s.Pending.Status = "rejected"
+		return j.write(tx, s)
+	})
+}
+
 // Accept clears only the exact acknowledged intent. A checkpoint cannot advance
 // by accidentally acknowledging a later request or a changed payload.
 func (j *Journal) Accept(intent Intent) error {
@@ -229,7 +282,7 @@ func (j *Journal) Accept(intent Intent) error {
 		if err != nil {
 			return err
 		}
-		if s.Pending == nil || s.Pending.Sequence != intent.Sequence || s.Pending.Digest != intent.Digest || s.Pending.Operation != intent.Operation || !bytes.Equal(s.Pending.Content, intent.Content) {
+		if s.Pending == nil || s.Pending.Status != "sending" || !sameIntent(*s.Pending, intent) {
 			return errors.New("target acceptance does not match pending intent")
 		}
 		id, err := intentID(*s.Pending)

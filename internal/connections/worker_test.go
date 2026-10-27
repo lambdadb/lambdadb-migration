@@ -25,21 +25,19 @@ import (
 // workerFixture is an HTTP contract fixture. Engine/WAL integration is a separate
 // optional cross-repository test; this fixture does not certify engine durability.
 type workerFixture struct {
-	mu                    sync.Mutex
-	approved              protocol.Approved
-	observation           *protocol.Observed
-	server                *httptest.Server
-	db                    *pgx.Conn
-	credentials           string
-	dir                   string
-	created, disconnected bool
-	creates, mutations    int
-	sequence              uint64
-	lastBody              []byte
-	docs                  map[string]map[string]json.RawMessage
-	secretsUnavailable    bool
-	controlUnavailable    bool
-	loseNext              bool
+	mu                 sync.Mutex
+	approved           protocol.Approved
+	observation        *protocol.Observed
+	server             *httptest.Server
+	db                 *pgx.Conn
+	credentials        string
+	dir                string
+	created            bool
+	creates, mutations int
+	docs               map[string]map[string]json.RawMessage
+	secretsUnavailable bool
+	controlUnavailable bool
+	loseNext           bool
 }
 type fixtureSecrets struct{ f *workerFixture }
 
@@ -137,11 +135,9 @@ func (f *workerFixture) handle(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(409)
 			return
 		}
-		var request struct {
-			Connection string `json:"connectionId"`
-		}
+		var request map[string]json.RawMessage
 		_ = json.NewDecoder(r.Body).Decode(&request)
-		if request.Connection != f.approved.Binding.ConnectionID {
+		if len(request) != 2 || request["collectionName"] == nil || request["indexConfigs"] == nil {
 			w.WriteHeader(400)
 			return
 		}
@@ -155,60 +151,39 @@ func (f *workerFixture) handle(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(404)
 			return
 		}
-		meta := CollectionMetadata{ConnectionID: f.approved.Binding.ConnectionID, CollectionName: "items", ProjectName: "test"}
-		if f.disconnected {
-			at := time.Now().UnixMilli()
-			meta.DisconnectedAt = &at
-		}
+		meta := CollectionMetadata{CollectionName: "items", ProjectName: "test"}
 		_ = json.NewEncoder(w).Encode(map[string]any{"collection": meta})
 		return
 	}
-	if strings.HasSuffix(path, "/connection/disconnect") {
-		f.disconnected = true
-		w.WriteHeader(202)
-		_ = json.NewEncoder(w).Encode(map[string]string{"connectionId": f.approved.Binding.ConnectionID, "state": "disconnected"})
-		return
-	}
 	var body struct {
-		Docs      []map[string]json.RawMessage `json:"docs"`
-		IDs       []string                     `json:"ids"`
-		Ingestion struct {
-			Connection string `json:"connectionId"`
-			Sequence   uint64 `json:"sequence"`
-		} `json:"ingestion"`
+		Docs []map[string]json.RawMessage `json:"docs"`
+		IDs  []string                     `json:"ids"`
 	}
 	raw := new(bytes.Buffer)
 	_, _ = raw.ReadFrom(r.Body)
-	if json.Unmarshal(raw.Bytes(), &body) != nil || body.Ingestion.Connection != f.approved.Binding.ConnectionID || f.disconnected {
-		w.WriteHeader(409)
+	var public map[string]json.RawMessage
+	if json.Unmarshal(raw.Bytes(), &public) != nil || len(public) != 1 || json.Unmarshal(raw.Bytes(), &body) != nil {
+		w.WriteHeader(400)
 		return
 	}
-	if body.Ingestion.Sequence > f.sequence+1 || (body.Ingestion.Sequence == f.sequence && !bytes.Equal(f.lastBody, raw.Bytes())) {
-		w.WriteHeader(409)
+	if len(body.Docs) == 1 {
+		var id string
+		_ = json.Unmarshal(body.Docs[0]["id"], &id)
+		f.docs[id] = body.Docs[0]
+	} else if len(body.IDs) == 1 {
+		delete(f.docs, body.IDs[0])
+	} else {
+		w.WriteHeader(400)
 		return
 	}
-	if body.Ingestion.Sequence > f.sequence {
-		if len(body.Docs) == 1 {
-			var id string
-			_ = json.Unmarshal(body.Docs[0]["id"], &id)
-			f.docs[id] = body.Docs[0]
-		} else if len(body.IDs) == 1 {
-			delete(f.docs, body.IDs[0])
-		} else {
-			w.WriteHeader(400)
-			return
-		}
-		f.sequence = body.Ingestion.Sequence
-		f.lastBody = bytes.Clone(raw.Bytes())
-		f.mutations++
-	}
+	f.mutations++
 	if f.loseNext {
 		f.loseNext = false
 		w.WriteHeader(503)
 		return
 	}
 	w.WriteHeader(202)
-	_ = json.NewEncoder(w).Encode(map[string]any{"ingestion": map[string]any{"connectionId": body.Ingestion.Connection, "sequence": body.Ingestion.Sequence}})
+	_ = json.NewEncoder(w).Encode(map[string]string{"message": "request accepted"})
 }
 func (f *workerFixture) worker(t *testing.T, initialize bool) (context.CancelFunc, <-chan error) {
 	t.Helper()
@@ -330,7 +305,7 @@ func TestWorkerContinuousFixedTargetRestartPauseAndExplicitResync(t *testing.T) 
 	f.await(t, func() bool { return f.phaseIs("disconnected") })
 	stopWorker(t, cancel, done)
 	f.mu.Lock()
-	if f.creates != 1 || len(f.docs) != 2 || !f.disconnected {
+	if f.creates != 1 || len(f.docs) != 2 {
 		f.mu.Unlock()
 		t.Fatal("disconnect did not preserve fixed target")
 	}
@@ -392,26 +367,40 @@ func TestWorkerSnapshotCompletesOnceAndMissingVolumeFailsClosed(t *testing.T) {
 	}
 }
 
-func TestWorkerResyncRemovesRowAcceptedBeforeSourceCheckpoint(t *testing.T) {
+func TestWorkerUncertainWriteBlocksRestartResumeResyncAndDisconnect(t *testing.T) {
 	f := newWorkerFixture(t, "continuous")
 	cancel, done := f.worker(t, true)
 	f.await(t, func() bool { return f.phaseIs("running") && len(f.docs) == 2 })
 	f.mu.Lock()
 	f.loseNext = true
+	before := *f.observation.Observation.Position
 	f.mu.Unlock()
 	f.sql(t, "INSERT INTO TABLE VALUES(2,'partially-applied','{}')")
-	f.await(t, func() bool { return f.docs["2"] != nil && f.phaseIs("action_required") })
-	f.command("paused", false)
-	f.await(t, func() bool { return f.phaseIs("paused") })
-	f.sql(t, "DELETE FROM TABLE WHERE pk=2")
-	f.command("running", true)
-	f.await(t, func() bool { return f.docs["2"] == nil && f.phaseIs("running") })
+	f.await(t, func() bool {
+		return f.docs["2"] != nil && f.phaseIs("action_required") && f.observation.Observation.ReasonCode == "target_outcome_uncertain"
+	})
+	stopWorker(t, cancel, done)
 	f.mu.Lock()
-	if f.creates != 1 {
-		f.mu.Unlock()
-		t.Fatal("resync replaced target")
-	}
+	mutations := f.mutations
+	sequence := f.observation.Observation.Sequence
 	f.mu.Unlock()
+	cancel, done = f.worker(t, false)
+	f.await(t, func() bool { return f.observation.Observation.Sequence > sequence && f.phaseIs("action_required") })
+	f.sql(t, "DELETE FROM TABLE WHERE pk=2;UPDATE TABLE SET title='later' WHERE pk=1")
+	for _, command := range []struct {
+		state  string
+		resync bool
+	}{{"paused", false}, {"running", false}, {"running", true}, {"disconnected", false}} {
+		f.command(command.state, command.resync)
+		f.await(t, func() bool {
+			return f.phaseIs("action_required") && f.observation.Observation.DesiredRevision == f.approved.Control.DesiredRevision
+		})
+		f.mu.Lock()
+		if f.mutations != mutations || f.creates != 1 || f.observation.Observation.ReasonCode != "target_outcome_uncertain" || *f.observation.Observation.Position != before {
+			t.Error("command bypassed uncertainty or advanced source checkpoint")
+		}
+		f.mu.Unlock()
+	}
 	stopWorker(t, cancel, done)
 }
 func TestWorkerDoesNotAdoptExistingCollection(t *testing.T) {

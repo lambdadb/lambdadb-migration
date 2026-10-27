@@ -26,6 +26,7 @@ type workerData struct {
 	Sequence        uint64             `json:"observation_sequence"`
 	Phase           string             `json:"phase"`
 	Reason          string             `json:"reason,omitempty"`
+	TargetCreated   bool               `json:"target_created"`
 	CreationAttempt bool               `json:"creation_attempt"`
 	Ready           bool               `json:"ready"`
 	ReadyRevision   uint64             `json:"ready_revision"`
@@ -220,7 +221,22 @@ func (w *Worker) Run(ctx context.Context) error {
 			stop()
 		}
 		if cancel == nil {
+			// Cancellation may have left an in-flight request. Reload after stop;
+			// no desired command can clear evidence of an uncertain target write.
+			d, e = w.data()
+			if e != nil {
+				return e
+			}
+			blocked := w.journal.PendingError()
+			if d.CreationAttempt && !d.TargetCreated {
+				blocked = ErrTargetOutcomeUncertain
+			}
 			switch {
+			case blocked != nil:
+				if !errors.Is(blocked, ErrTargetOutcomeUncertain) && !errors.Is(blocked, ErrTargetRejected) {
+					return blocked
+				}
+				_ = w.phase("action_required", reasonCode(blocked))
 			case desiredKey == "expired":
 				_ = w.phase("expired", "authority_expired")
 			case d.Phase == "disconnected" && command.DesiredState == "disconnected":
@@ -274,6 +290,12 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 }
 func reasonCode(err error) string {
+	if errors.Is(err, ErrTargetOutcomeUncertain) {
+		return "target_outcome_uncertain"
+	}
+	if errors.Is(err, ErrTargetRejected) {
+		return "target_rejected"
+	}
 	switch err.Error() {
 	case "authority_expired":
 		return "authority_expired"
@@ -289,6 +311,9 @@ func reasonCode(err error) string {
 	return "operation_failed"
 }
 func (w *Worker) execute(ctx context.Context, a protocol.Approved) error {
+	if err := w.journal.PendingError(); err != nil {
+		return err
+	}
 	if err := w.authority(); err != nil {
 		return err
 	}
@@ -333,11 +358,6 @@ func (w *Worker) execute(ctx context.Context, a protocol.Approved) error {
 				return errors.New("source_setup_required")
 			}
 		}
-		if d.CreationAttempt {
-			if err = target.Disconnect(ctx); err != nil {
-				return errors.New("target_unavailable")
-			}
-		}
 		return w.phase("disconnected", "")
 	}
 	_ = w.phase("validating", "")
@@ -346,7 +366,7 @@ func (w *Worker) execute(ctx context.Context, a protocol.Approved) error {
 	}
 	guarded := guardedTarget{target, w.authority}
 	if err = w.journal.RecoverPending(ctx, guarded); err != nil {
-		return errors.New("target_unavailable")
+		return err
 	}
 	d, err = w.data()
 	if err != nil {

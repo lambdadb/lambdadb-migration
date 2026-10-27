@@ -14,8 +14,6 @@ import (
 )
 
 type CollectionMetadata struct {
-	ConnectionID   string `json:"connectionId"`
-	DisconnectedAt *int64 `json:"disconnectedAt"`
 	CollectionName string `json:"collectionName"`
 	ProjectName    string `json:"projectName"`
 }
@@ -67,37 +65,21 @@ func (t *APITarget) Describe(ctx context.Context) (*CollectionMetadata, error) {
 }
 
 // CreateOnce must be preceded by a durable local creation-attempt marker. An
-// uncertain outcome is recovered by Describe, never by another creation request.
+// uncertain outcome requires intervention; metadata alone cannot prove ownership.
 func (t *APITarget) CreateOnce(ctx context.Context) error {
 	body, _ := json.Marshal(struct {
 		Collection string          `json:"collectionName"`
 		Indexes    json.RawMessage `json:"indexConfigs"`
-		Connection string          `json:"connectionId"`
-	}{t.binding.Target.Collection, t.binding.IndexConfigs, t.binding.ConnectionID})
+	}{t.binding.Target.Collection, t.binding.IndexConfigs})
 	_, status, err := t.request(ctx, "POST", "/projects/"+url.PathEscape(t.binding.Target.Project)+"/collections", body)
 	if err != nil {
 		return err
 	}
-	if status != 200 && status != 201 && status != 202 {
-		return fmt.Errorf("target creation unconfirmed (HTTP %d)", status)
-	}
-	return nil
-}
-func (t *APITarget) Disconnect(ctx context.Context) error {
-	body, _ := json.Marshal(map[string]string{"connectionId": t.binding.ConnectionID})
-	raw, status, err := t.request(ctx, "POST", t.collectionPath()+"/connection/disconnect", body)
-	if err != nil {
-		return err
-	}
-	if status != 202 {
-		return fmt.Errorf("target disconnect unconfirmed (HTTP %d)", status)
-	}
-	var receipt struct {
-		Connection string `json:"connectionId"`
-		State      string `json:"state"`
-	}
-	if json.Unmarshal(raw, &receipt) != nil || receipt.Connection != t.binding.ConnectionID || receipt.State != "disconnected" {
-		return errors.New("target disconnect receipt mismatch")
+	if status != http.StatusCreated {
+		if status >= 300 && status < 500 && status != 408 {
+			return ErrTargetRejected
+		}
+		return ErrTargetOutcomeUncertain
 	}
 	return nil
 }

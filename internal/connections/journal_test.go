@@ -65,7 +65,7 @@ func TestJournalRequiresExplicitBootstrapAndRetainsExactIntent(t *testing.T) {
 	if err != nil || s.Pending.Digest != saved.Digest || string(s.Pending.Content) != string(saved.Content) {
 		t.Fatal("restart lost intent identity", err)
 	}
-	if err = j.Accept(saved); err != nil {
+	if err = acceptPrepared(j, saved); err != nil {
 		t.Fatal(err)
 	}
 	next, err := j.Prepare("delete", json.RawMessage(`{"ids":["one"]}`))
@@ -93,6 +93,9 @@ func TestJournalProcessHelper(t *testing.T) {
 	}
 	intent, err := j.Prepare("delete", json.RawMessage(`{"ids":["one"]}`))
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err = j.markSending(*intent); err != nil {
 		t.Fatal(err)
 	}
 	if os.Getenv("CONNECTION_JOURNAL_ACCEPTED") == "1" {
@@ -194,7 +197,7 @@ func TestManagedInventorySurvivesPartialSourceCheckpointAndPendingRecovery(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = j.Accept(*first); err != nil {
+	if err = acceptPrepared(j, *first); err != nil {
 		t.Fatal(err)
 	}
 	pending, err := j.Prepare("upsert", json.RawMessage(`{"docs":[{"id":"partial","title":"not-in-source-checkpoint"}]}`))
@@ -211,7 +214,7 @@ func TestManagedInventorySurvivesPartialSourceCheckpointAndPendingRecovery(t *te
 		t.Fatal(err)
 	}
 	defer j.Close()
-	if err = j.Accept(*pending); err != nil {
+	if err = acceptPrepared(j, *pending); err != nil {
 		t.Fatal(err)
 	}
 	state, err := j.Load()
@@ -222,7 +225,7 @@ func TestManagedInventorySurvivesPartialSourceCheckpointAndPendingRecovery(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = j.Accept(*removal); err != nil {
+	if err = acceptPrepared(j, *removal); err != nil {
 		t.Fatal(err)
 	}
 	state, _ = j.Load()
@@ -246,4 +249,12 @@ func TestJournalRejectsUntrackableIntentBeforeNetworkSend(t *testing.T) {
 	if err != nil || state.Pending != nil || state.AcceptedSequence != 0 || len(state.ManagedIDs) != 0 {
 		t.Fatal("rejected intent changed regional state")
 	}
+}
+
+// Simulate a successful response after a persisted transmission marker.
+func acceptPrepared(j *Journal, p Intent) error {
+	if err := j.markSending(p); err != nil {
+		return err
+	}
+	return j.Accept(p)
 }

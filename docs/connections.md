@@ -98,64 +98,72 @@ A paused connection still retains WAL; monitor disk pressure and retention.
 
 ## Recovery and application
 
-`connection.db` atomically persists pending immutable target intents, a monotonically
-increasing producer sequence, the inventory of accepted managed document IDs,
-small initial/resync cursors, approved references and observations. `source.db`
-retains source identity, selected complete rows, source checkpoint, slot ownership,
-and current/prepared cuts. Both are region-local, fsynced bbolt files protected by
-exclusive locks. Filesystem/volume durability is required. This is not multi-host
-HA; offset-only remote backup would lose necessary reconstruction state.
+`connection.db` atomically persists immutable target intents, their transmission
+state, a local journal sequence, accepted managed document IDs, initial/resync
+cursors, approved references and observations. `source.db` retains source identity,
+selected complete rows, checkpoint, slot ownership and current/prepared cuts.
+Both are region-local, fsynced bbolt files protected by exclusive locks. This
+worker storage is independent of the engine's WAL storage; no EFS is required by
+the worker. Retained volume durability is required; remote state and HA are later.
 
-Use the target's supported document upsert/delete HTTP APIs with optional
-`ingestion: {connectionId, sequence}`. Require the exact durable acceptance echo;
-a generic 202 is insufficient. The supported Go SDK version does not yet expose
-this additive field, so the adapter uses those same public HTTP endpoints. The
-source checkpoint and feedback advance only after all target intents in that
-transaction are accepted. There is no per-write Fetch or query gate. The caller
-can use ordinary collection APIs/SDK immediately; partial initial/resync results
-can be visible. Completion describes durable acceptance, not indexing visibility
-or atomic cross-document query visibility. Customer writes may diverge from or
-be overwritten by source changes; conflict resolution and read/write key separation
-are deferred.
+The worker calls ordinary supported collection creation and document upsert/delete
+HTTP APIs. It sends no `ingestion`, connection association or idempotency-key
+fields and requires no engine extension. A document HTTP 202 with a valid message
+confirms acceptance. There is no per-write Fetch, search gate or automatic write
+retry. Source checkpoint and replication feedback advance only after all target
+operations in the source transaction have confirmed acceptance.
 
-Normal restart validates the existing source/slot/projection, recovers an uncertain
-intent, and streams from the retained checkpoint without rewriting the baseline.
-Target ordering rejects a different producer/gap/conflicting latest sequence and
-makes older accepted requests harmless, including delayed deletes after reinsertion.
-It requires the companion engine contract; a version number alone does not prove
-that all gateway/controller/writer nodes are upgraded. Do not enable a deployment
-until every serving mutation path supports the new contract. Collection ownership
-is checked at startup; document readback is only a test oracle.
+Before sending, the journal persists `prepared`, then `sending`. A restart can
+send an intent still marked `prepared`, since transmission never started. An
+intent marked `sending` without locally saved acceptance stops the connection as
+`action_required` / `target_outcome_uncertain`. This includes transport failures,
+HTTP 408/5xx, invalid success bodies, termination during transmission and failure
+to save a successful response. A clear 3xx/4xx rejection other than 408 is recorded
+as `target_rejected`; redirects are never followed. No failure detail contains
+credentials or document content. Retrying cannot be enabled by restarting,
+changing desired state, resync or authority renewal. No manual journal-clear or
+readback-based acceptance shortcut is supplied. Investigate/quiesce any late
+request before planning operator recovery; a delayed ordinary write can still
+reach the target while the connection is stopped.
 
-Explicit resync retains the same collection and producer sequence. Save a new cut,
-delete tracked managed IDs absent from it, put its rows with persisted cursors,
-and promote the source checkpoint only after complete acceptance. The per-intent
-ID inventory also removes rows accepted before a crashed source checkpoint. Rows
-added only by customers are not automatically deleted. Slot continuity loss needs
-explicit resync; incompatible source history/mapping requires a new connection.
+Journal format 3 deliberately refuses previous ordered-ingestion journal formats.
+Existing experiment files must be retained for investigation; do not delete them,
+initialize over them or attach a new journal to an existing target. The previous
+engine-specific experiment and generic EFS idempotency prototype are deferred,
+not required by this execution path.
 
-Pause cancels and joins capture before reporting paused. Cached regional authority
-permits ongoing replication during control outages until expiry; source feedback
-and target sends check local authority. A restart currently needs the regional
-service to read desired/observed metadata. Central backend is never in the batch
-path. Authority renewal alone does not restart capture.
+Normal restart with no uncertain request validates source continuity and retains
+the same collection/baseline. Explicit resync reconciles accepted managed IDs and
+persists cursors in the same collection, only when no uncertain/rejected intent
+blocks execution. Customer-only IDs are not removed. Partial initial/resync data
+can be visible. Completion certifies durable acceptance, not indexing visibility
+or atomic query visibility. Customer writes can diverge or be overwritten;
+conflict resolution and read/write key separation remain deferred.
 
-Disconnect stops capture, drops only a proven owned inactive pgoutput slot, seals
-the producer through the target API, then atomically retires its association and
-project deletion guard. A lost receipt retries those steps. The backend retires
-the source secret and releases its central deletion guard after a matching receipt.
-Target data remains readable, and terminal restart no longer needs either secret.
-A source that owns a slot but is unreachable blocks normal cleanup; forced cleanup
-needs a separate operator policy. Unknown target creation outcomes are recovered
-by metadata lookup only. If the attempted collection is still absent, stop for
-operator recovery rather than risk a late duplicate create. No automatic orphan
-secret/target reconciliation is claimed.
+Collection creation also persists an attempt before sending and confirmation after
+success. An uncertain creation is never retried or adopted solely by metadata
+lookup, even if a collection with that name is visible. Existing unrelated targets
+are refused. A known created collection that disappears is not recreated. Direct
+data-plane deletion/recreation is not fenced by this worker; central management
+deletion guards remain, and operators must avoid replacing an active target.
+
+Pause cancels and joins capture. If cancellation leaves a sending intent, uncertainty
+takes precedence over paused/completed/disconnected status. Cached regional
+authority permits ongoing replication during control outages until expiry; the
+central backend is never in the batch path. Normal startup needs regional metadata.
+
+Disconnect without uncertain work stops capture and removes only an owned inactive
+pgoutput slot. It makes no engine disconnect/seal call and preserves the collection.
+The backend retires the source secret and releases central deletion guards only
+after a matching successful regional disconnection observation. An uncertain
+connection cannot certify disconnection or release those guards. An unreachable
+source with an owned slot requires a separately defined operator cleanup policy.
 
 ## Bounds and validation
 
 This first correctness delivery keeps at most 10,000 rows, 32 MiB per retained
 source dataset/journal state and 8 MiB of logical transaction input. One complete
-row is sent per ordered intent. Initial/resync datasets are not rewritten into the
+row is sent per locally journaled intent. Initial/resync datasets are not rewritten into the
 common journal on every target operation. This is a bounded spike, not production
 throughput or unbounded outage/HA certification. MongoDB, Console, credential
 rotation, remote state/backup and production orchestration remain later work.

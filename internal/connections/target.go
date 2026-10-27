@@ -16,8 +16,7 @@ import (
 	"github.com/lambdadb/lambdadb-migration/internal/connections/protocol"
 )
 
-// IntentTarget acknowledges only the target's durable ordered acceptance.
-// A generic 202 response does not satisfy this contract.
+// IntentTarget uses ordinary supported document APIs, without automatic retries.
 type IntentTarget interface {
 	Send(context.Context, Intent) error
 }
@@ -49,15 +48,7 @@ func (t *APITarget) Send(ctx context.Context, intent Intent) error {
 	if content[field] == nil {
 		return errors.New("target content does not match operation")
 	}
-	order := struct {
-		ConnectionID string `json:"connectionId"`
-		Sequence     uint64 `json:"sequence"`
-	}{t.binding.ConnectionID, intent.Sequence}
-	content["ingestion"], _ = json.Marshal(order)
-	raw, err := json.Marshal(content)
-	if err != nil {
-		return errors.New("cannot encode target intent")
-	}
+	raw := intent.Content
 	path := strings.TrimRight(t.binding.Target.URL, "/") + "/projects/" + url.PathEscape(t.binding.Target.Project) + "/collections/" + url.PathEscape(t.binding.Target.Collection) + "/docs/" + intent.Operation
 	req, err := http.NewRequestWithContext(ctx, "POST", path, bytes.NewReader(raw))
 	if err != nil {
@@ -72,28 +63,30 @@ func (t *APITarget) Send(ctx context.Context, intent Intent) error {
 	}
 	response, err := t.client.Do(req)
 	if err != nil {
-		return errors.New("target outcome uncertain; retain pending intent")
+		return ErrTargetOutcomeUncertain
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusAccepted {
-		return fmt.Errorf("target ordered mutation not accepted (HTTP %d)", response.StatusCode)
+		if response.StatusCode >= 300 && response.StatusCode < 500 && response.StatusCode != 408 {
+			return fmt.Errorf("%w (HTTP %d)", ErrTargetRejected, response.StatusCode)
+		}
+		return ErrTargetOutcomeUncertain
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, 4097))
-	if err != nil || len(data) > 4096 {
-		return errors.New("invalid target acceptance")
-	}
 	var receipt struct {
-		Ingestion *struct {
-			ConnectionID string `json:"connectionId"`
-			Sequence     uint64 `json:"sequence"`
-		} `json:"ingestion"`
+		Message string `json:"message"`
 	}
-	if json.Unmarshal(data, &receipt) != nil || receipt.Ingestion == nil || receipt.Ingestion.ConnectionID != order.ConnectionID || receipt.Ingestion.Sequence != order.Sequence {
-		return errors.New("target lacks matching ordered acceptance; retain pending intent")
+	if err != nil || len(data) > 4096 || json.Unmarshal(data, &receipt) != nil || receipt.Message == "" {
+		return ErrTargetOutcomeUncertain
 	}
 	return nil
 }
+
+// RecoverPending sends only a prepared intent that has never started transmission.
 func (j *Journal) RecoverPending(ctx context.Context, target IntentTarget) error {
+	if err := j.PendingError(); err != nil {
+		return err
+	}
 	s, err := j.Load()
 	if err != nil {
 		return err
@@ -101,18 +94,33 @@ func (j *Journal) RecoverPending(ctx context.Context, target IntentTarget) error
 	if s.Pending == nil {
 		return nil
 	}
-	if err = target.Send(ctx, *s.Pending); err != nil {
+	return j.deliver(ctx, target, *s.Pending)
+}
+func (j *Journal) deliver(ctx context.Context, target IntentTarget, intent Intent) error {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return j.Accept(*s.Pending)
+	if err := j.markSending(intent); err != nil {
+		return err
+	}
+	if err := target.Send(ctx, intent); err != nil {
+		if errors.Is(err, ErrTargetRejected) {
+			if saveErr := j.reject(intent); saveErr != nil {
+				return ErrTargetOutcomeUncertain
+			}
+			return ErrTargetRejected
+		}
+		return ErrTargetOutcomeUncertain
+	}
+	if err := j.Accept(intent); err != nil {
+		return ErrTargetOutcomeUncertain
+	}
+	return nil
 }
 func (j *Journal) Apply(ctx context.Context, target IntentTarget, operation string, content json.RawMessage) error {
 	intent, err := j.Prepare(operation, content)
 	if err != nil {
 		return err
 	}
-	if err = target.Send(ctx, *intent); err != nil {
-		return err
-	}
-	return j.Accept(*intent)
+	return j.deliver(ctx, target, *intent)
 }
