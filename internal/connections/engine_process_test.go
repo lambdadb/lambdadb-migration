@@ -155,7 +155,7 @@ func (p *engineProcessFixture) await(t *testing.T, condition func() bool) {
 }
 func (p *engineProcessFixture) phase(phase string) bool {
 	o, e := p.observed()
-	return e == nil && o != nil && o.Observation.Phase == phase
+	return e == nil && o != nil && o.Observation.Phase == phase && o.Observation.DesiredRevision == p.f.approved.Control.DesiredRevision && (phase != "completed" || o.Observation.CompletedResyncRevision == p.f.approved.Control.ResyncRevision)
 }
 func (p *engineProcessFixture) targetCall(t *testing.T, method, path string, body any) ([]byte, int) {
 	t.Helper()
@@ -216,114 +216,80 @@ func (p *engineProcessFixture) change(t *testing.T, state string, resync bool) {
 	}
 }
 
-func TestEngineProcessLateWritesRestartAndPreservedDisconnection(t *testing.T) {
-	p := newEngineProcessFixture(t, "continuous")
-	initialStats := p.fault(t, map[string]any{})
-	createsBefore := initialStats["creates"].(float64)
-	delayedBefore := initialStats["delayed_completed"].(float64)
-	worker := p.start(t, true)
-	p.await(t, func() bool { return p.phase("running") })
-	p.await(t, func() bool {
-		docs := p.fetch(t, "1", "9007199254740993")
-		return len(docs) == 2 && string(docs["9007199254740993"]["pk"]) == "9007199254740993"
-	})
-	stats := p.fault(t, map[string]any{"collection": p.f.approved.Binding.Target.Collection})
-	initial := stats["mutations"].(float64)
-	beforeRestart, _ := p.observed()
-	sequenceBeforeRestart := beforeRestart.Observation.Sequence
-	p.kill(t, worker)
-	worker = p.start(t, false)
-	p.await(t, func() bool {
-		o, _ := p.observed()
-		return o != nil && o.Observation.Sequence > sequenceBeforeRestart && o.Observation.Phase == "running"
-	})
-	stats = p.fault(t, map[string]any{"collection": p.f.approved.Binding.Target.Collection})
-	if stats["mutations"].(float64) != initial {
-		t.Fatal("normal restart rewrote baseline")
+func TestEngineProcessUncertainWritesNeverResumeOrResend(t *testing.T) {
+	for _, operation := range []string{"upsert", "delete", "lost-response"} {
+		t.Run(operation, func(t *testing.T) {
+			p := newEngineProcessFixture(t, "continuous")
+			worker := p.start(t, true)
+			p.await(t, func() bool { return p.phase("running") })
+			before, _ := p.observed()
+			position := *before.Observation.Position
+			if operation == "lost-response" {
+				p.fault(t, map[string]any{"lose_next": true})
+			} else {
+				p.fault(t, map[string]any{"hold_next": true})
+			}
+			if operation == "delete" {
+				p.f.sql(t, "DELETE FROM TABLE WHERE pk=1")
+			} else {
+				p.f.sql(t, "UPDATE TABLE SET title='uncertain' WHERE pk=1")
+			}
+			if operation == "lost-response" {
+				p.await(t, func() bool { return p.phase("action_required") })
+			} else {
+				p.await(t, func() bool { return p.fault(t, map[string]any{})["held"] == true })
+			}
+			p.kill(t, worker)
+			worker = p.start(t, false)
+			p.await(t, func() bool {
+				o, _ := p.observed()
+				return o != nil && o.Observation.Sequence > before.Observation.Sequence && o.Observation.ReasonCode == "target_outcome_uncertain"
+			})
+			stats := p.fault(t, map[string]any{"collection": p.f.approved.Binding.Target.Collection})
+			mutations := stats["mutations"].(float64)
+			if operation == "delete" {
+				p.f.sql(t, "INSERT INTO TABLE VALUES(1,'later','{}')")
+			} else {
+				p.f.sql(t, "UPDATE TABLE SET title='later' WHERE pk=1")
+			}
+			for _, command := range []struct {
+				state  string
+				resync bool
+			}{{"paused", false}, {"running", false}, {"running", true}, {"disconnected", false}} {
+				p.change(t, command.state, command.resync)
+				p.await(t, func() bool {
+					o, _ := p.observed()
+					return o != nil && o.Observation.DesiredRevision == p.f.approved.Control.DesiredRevision && o.Observation.ReasonCode == "target_outcome_uncertain"
+				})
+				o, _ := p.observed()
+				if o.Observation.Phase != "action_required" || *o.Observation.Position != position {
+					t.Fatal("uncertain write advanced checkpoint or completed command")
+				}
+				if p.fault(t, map[string]any{"collection": p.f.approved.Binding.Target.Collection})["mutations"].(float64) != mutations {
+					t.Fatal("uncertain intent replayed or newer mutation submitted")
+				}
+			}
+			if operation != "lost-response" {
+				beforeRelease := p.fault(t, map[string]any{})["delayed_completed"].(float64)
+				p.fault(t, map[string]any{"release": true})
+				p.await(t, func() bool { return p.fault(t, map[string]any{})["delayed_completed"].(float64) > beforeRelease })
+				// A delayed ordinary request can still arrive. The worker remains
+				// blocked; it has not submitted a conflicting newer request.
+				if p.fault(t, map[string]any{})["delayed_status"].(float64) != 202 {
+					t.Fatal("ordinary delayed request did not exercise acceptance")
+				}
+			}
+			p.kill(t, worker)
+		})
 	}
-	// Hold an old upsert before the real handler. Kill its client, retry the exact
-	// durable intent, apply a newer source change, then release the delayed request.
-	p.fault(t, map[string]any{"hold_next": true})
-	p.f.sql(t, "UPDATE TABLE SET title='old-pending' WHERE pk=1")
-	p.await(t, func() bool { return p.fault(t, map[string]any{})["held"] == true })
-	p.kill(t, worker)
-	worker = p.start(t, false)
-	p.await(t, func() bool { return string(p.fetch(t, "1")["1"]["title"]) == `"old-pending"` })
-	p.f.sql(t, "UPDATE TABLE SET title='newest' WHERE pk=1")
-	p.await(t, func() bool { return string(p.fetch(t, "1")["1"]["title"]) == `"newest"` })
-	p.fault(t, map[string]any{"release": true})
-	p.await(t, func() bool { return p.fault(t, map[string]any{})["delayed_completed"].(float64) >= delayedBefore+1 })
-	if string(p.fetch(t, "1")["1"]["title"]) != `"newest"` {
-		t.Fatal("late old upsert regressed target")
-	}
-	// Repeat with a delete held across a later reinsertion of the same ID.
-	p.fault(t, map[string]any{"hold_next": true})
-	p.f.sql(t, "DELETE FROM TABLE WHERE pk=1")
-	p.await(t, func() bool { return p.fault(t, map[string]any{})["held"] == true })
-	p.kill(t, worker)
-	worker = p.start(t, false)
-	p.await(t, func() bool { return p.fetch(t, "1")["1"] == nil })
-	p.f.sql(t, "INSERT INTO TABLE VALUES(1,'reinserted','{}')")
-	p.await(t, func() bool { return string(p.fetch(t, "1")["1"]["title"]) == `"reinserted"` })
-	p.fault(t, map[string]any{"release": true})
-	p.await(t, func() bool { return p.fault(t, map[string]any{})["delayed_completed"].(float64) >= delayedBefore+2 })
-	if string(p.fetch(t, "1")["1"]["title"]) != `"reinserted"` {
-		t.Fatal("late old delete removed reinsertion")
-	}
-	// Lose the response after real durable acceptance, then kill and recover.
-	p.fault(t, map[string]any{"lose_next": true})
-	p.f.sql(t, "INSERT INTO TABLE VALUES(2,'lost-response','{}')")
-	p.await(t, func() bool { return p.phase("action_required") && p.fetch(t, "2")["2"] != nil })
-	p.kill(t, worker)
-	worker = p.start(t, false)
-	p.await(t, func() bool { return p.phase("running") })
-	p.change(t, "paused", false)
-	p.await(t, func() bool { return p.phase("paused") })
-	p.f.sql(t, "DELETE FROM TABLE WHERE pk=2;UPDATE TABLE SET title='resync' WHERE pk=1")
-	p.change(t, "running", true)
-	p.await(t, func() bool {
-		docs := p.fetch(t, "1", "2")
-		return p.phase("running") && docs["2"] == nil && string(docs["1"]["title"]) == `"resync"`
-	})
-	_, status := p.targetCall(t, "DELETE", "/projects/test/collections/"+p.f.approved.Binding.Target.Collection, nil)
-	if status != 409 {
-		t.Fatal("direct collection deletion was not protected")
-	}
-	p.fault(t, map[string]any{"hold_next": true})
-	p.f.sql(t, "UPDATE TABLE SET title='must-not-arrive-after-disconnect' WHERE pk=1")
-	p.await(t, func() bool { return p.fault(t, map[string]any{})["held"] == true })
-	p.kill(t, worker)
-	p.change(t, "disconnected", false)
-	worker = p.start(t, false)
-	p.await(t, func() bool { return p.phase("disconnected") })
-	p.fault(t, map[string]any{"release": true})
-	p.await(t, func() bool { return p.fault(t, map[string]any{})["delayed_completed"].(float64) >= delayedBefore+3 })
-	if p.fault(t, map[string]any{})["delayed_status"].(float64) != 409 || string(p.fetch(t, "1")["1"]["title"]) != `"resync"` {
-		t.Fatal("disconnected producer accepted a delayed write")
-	}
-	if len(p.fetch(t, "1", "9007199254740993")) != 2 {
-		t.Fatal("disconnect removed target data")
-	}
-	stats = p.fault(t, map[string]any{})
-	if stats["creates"].(float64) != createsBefore+1 {
-		t.Fatal("worker created another collection")
-	}
-	p.kill(t, worker)
 }
 
 func TestEngineProcessSnapshotCursorAndStateLoss(t *testing.T) {
 	p := newEngineProcessFixture(t, "snapshot")
 	initialStats := p.fault(t, map[string]any{})
 	before := initialStats["creates"].(float64)
-	delayedBefore := initialStats["delayed_completed"].(float64)
-	p.fault(t, map[string]any{"hold_next": true})
 	worker := p.start(t, true)
-	p.await(t, func() bool { return p.fault(t, map[string]any{})["held"] == true })
-	p.kill(t, worker)
-	worker = p.start(t, false)
 	p.await(t, func() bool { return p.phase("completed") })
-	p.fault(t, map[string]any{"release": true})
-	p.await(t, func() bool { return p.fault(t, map[string]any{})["delayed_completed"].(float64) > delayedBefore })
 	docs := p.fetch(t, "1", "9007199254740993")
 	if len(docs) != 2 || docs["1"]["excluded"] != nil {
 		t.Fatal("snapshot cursor recovery lost rows or leaked excluded data")
@@ -378,6 +344,38 @@ func TestEngineProcessSnapshotCursorAndStateLoss(t *testing.T) {
 	stats = p.fault(t, map[string]any{})
 	if stats["creates"].(float64) != before+1 {
 		t.Fatal("snapshot restart changed collection")
+	}
+	p.kill(t, worker)
+}
+
+func TestEngineProcessOrdinaryCDCAndSafeRestartKeepTheSameCollection(t *testing.T) {
+	p := newEngineProcessFixture(t, "continuous")
+	beforeCreates := p.fault(t, map[string]any{})["creates"].(float64)
+	worker := p.start(t, true)
+	p.await(t, func() bool { return p.phase("running") })
+	initial, _ := p.observed()
+	initialPosition := *initial.Observation.Position
+	p.f.sql(t, "UPDATE TABLE SET title='changed' WHERE pk=1;DELETE FROM TABLE WHERE pk=9007199254740993;INSERT INTO TABLE VALUES(2,'two','{}')")
+	p.await(t, func() bool {
+		observed, _ := p.observed()
+		docs := p.fetch(t, "1", "2", "9007199254740993")
+		return observed != nil && observed.Observation.Position != nil && *observed.Observation.Position != initialPosition && string(docs["1"]["title"]) == `"changed"` && docs["2"] != nil && docs["9007199254740993"] == nil
+	})
+	beforeRestart, _ := p.observed()
+	accepted := p.fault(t, map[string]any{"collection": p.f.approved.Binding.Target.Collection})["mutations"].(float64)
+	p.kill(t, worker)
+	worker = p.start(t, false)
+	p.await(t, func() bool {
+		observed, _ := p.observed()
+		return p.phase("running") && observed != nil && observed.Observation.Sequence > beforeRestart.Observation.Sequence
+	})
+	if p.fault(t, map[string]any{"collection": p.f.approved.Binding.Target.Collection})["mutations"].(float64) != accepted {
+		t.Fatal("safe restart rewrote accepted baseline")
+	}
+	p.change(t, "disconnected", false)
+	p.await(t, func() bool { return p.phase("disconnected") })
+	if len(p.fetch(t, "1", "2")) != 2 || p.fault(t, map[string]any{})["creates"].(float64) != beforeCreates+1 {
+		t.Fatal("disconnect removed data or restart replaced collection")
 	}
 	p.kill(t, worker)
 }

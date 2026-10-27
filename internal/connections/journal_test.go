@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	bolt "go.etcd.io/bbolt"
 )
 
 func TestJournalRequiresExplicitBootstrapAndRetainsExactIntent(t *testing.T) {
@@ -257,4 +259,31 @@ func acceptPrepared(j *Journal, p Intent) error {
 		return err
 	}
 	return j.Accept(p)
+}
+
+func TestOldOrderedJournalCannotBeReinterpretedOrInitialized(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	j, err := OpenJournal(path, "binding", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = j.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("connection"))
+		var state State
+		if err := json.Unmarshal(b.Get([]byte("state")), &state); err != nil {
+			return err
+		}
+		state.Format = 2
+		raw, _ := json.Marshal(state)
+		return b.Put([]byte("state"), raw)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = j.Close()
+	if _, err = OpenJournal(path, "binding", false); err == nil {
+		t.Fatal("old ordered journal silently resumed")
+	}
+	if _, err = OpenJournal(path, "binding", true); err == nil {
+		t.Fatal("old journal overwritten by initialization")
+	}
 }

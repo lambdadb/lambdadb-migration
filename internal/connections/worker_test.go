@@ -37,6 +37,7 @@ type workerFixture struct {
 	docs               map[string]map[string]json.RawMessage
 	secretsUnavailable bool
 	controlUnavailable bool
+	loseCreate         bool
 	loseNext           bool
 }
 type fixtureSecrets struct{ f *workerFixture }
@@ -143,6 +144,11 @@ func (f *workerFixture) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		f.created = true
 		f.creates++
+		if f.loseCreate {
+			f.loseCreate = false
+			w.WriteHeader(503)
+			return
+		}
 		w.WriteHeader(201)
 		return
 	}
@@ -253,7 +259,7 @@ func (f *workerFixture) command(state string, resync bool) {
 	}
 }
 func (f *workerFixture) phaseIs(phase string) bool {
-	return f.observation != nil && f.observation.Observation.Phase == phase
+	return f.observation != nil && f.observation.Observation.Phase == phase && f.observation.Observation.DesiredRevision == f.approved.Control.DesiredRevision
 }
 
 func TestWorkerContinuousFixedTargetRestartPauseAndExplicitResync(t *testing.T) {
@@ -417,4 +423,64 @@ func TestWorkerDoesNotAdoptExistingCollection(t *testing.T) {
 		t.Fatal("unowned collection adopted")
 	}
 	f.mu.Unlock()
+}
+
+func TestWorkerUncertainCreationCannotAdoptVisibleCollectionOnRestart(t *testing.T) {
+	f := newWorkerFixture(t, "snapshot")
+	f.mu.Lock()
+	f.loseCreate = true
+	f.mu.Unlock()
+	cancel, done := f.worker(t, true)
+	f.await(t, func() bool {
+		return f.phaseIs("action_required") && f.observation.Observation.ReasonCode == "target_outcome_uncertain"
+	})
+	stopWorker(t, cancel, done)
+	f.mu.Lock()
+	sequence := f.observation.Observation.Sequence
+	f.mu.Unlock()
+	cancel, done = f.worker(t, false)
+	f.await(t, func() bool { return f.observation.Observation.Sequence > sequence && f.phaseIs("action_required") })
+	f.command("running", true)
+	f.await(t, func() bool { return f.phaseIs("action_required") })
+	stopWorker(t, cancel, done)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.created || f.creates != 1 || f.mutations != 0 || f.observation.Observation.ReasonCode != "target_outcome_uncertain" {
+		t.Fatal("uncertain creation retried or visible collection adopted")
+	}
+}
+
+func TestReportedUncertaintyRemainsBlockedEvenWithDurableAcceptanceProof(t *testing.T) {
+	f := newWorkerFixture(t, "snapshot")
+	cancel, done := f.worker(t, true)
+	f.await(t, func() bool { return f.phaseIs("completed") })
+	stopWorker(t, cancel, done)
+	// A durability call may report failure even when its bytes survived. Once
+	// uncertainty has been saved/reported, only operator recovery may clear it.
+	j, err := OpenJournal(filepath.Join(f.dir, "connection.db"), protocol.Fingerprint(f.approved.Binding), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = j.UpdateData(func(raw json.RawMessage) (json.RawMessage, error) {
+		var d workerData
+		if err := json.Unmarshal(raw, &d); err != nil {
+			return nil, err
+		}
+		d.Phase = "action_required"
+		d.Reason = "target_outcome_uncertain"
+		return json.Marshal(d)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = j.Close()
+	cancel, done = f.worker(t, false)
+	f.await(t, func() bool { return f.phaseIs("action_required") })
+	f.command("running", true)
+	f.await(t, func() bool { return f.phaseIs("action_required") })
+	stopWorker(t, cancel, done)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.mutations != 2 || f.observation.Observation.ReasonCode != "target_outcome_uncertain" {
+		t.Fatal("reported uncertainty silently cleared")
+	}
 }

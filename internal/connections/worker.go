@@ -228,7 +228,7 @@ func (w *Worker) Run(ctx context.Context) error {
 				return e
 			}
 			blocked := w.journal.PendingError()
-			if d.CreationAttempt && !d.TargetCreated {
+			if d.Reason == "target_outcome_uncertain" || (d.CreationAttempt && !d.TargetCreated) {
 				blocked = ErrTargetOutcomeUncertain
 			}
 			switch {

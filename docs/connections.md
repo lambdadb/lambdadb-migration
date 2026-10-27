@@ -178,14 +178,24 @@ CONNECTION_TEST_ENGINE_DIR=/path/to/engine-worktree \
 bash scripts/connections-test-engine.sh
 ```
 
-It builds both executables, starts real backend regional control, local PostgreSQL,
-and the engine's test-only HTTPS component target. The target uses public DTOs,
-real catalog/routing, mutation handler, writer overlays and EFS WAL; its HTTP
-adapter and project/catalog storage are fixtures. It does not replace deployed
-Gateway/indexer/DynamoDB/S3/native-image validation. It proves real SIGKILL recovery,
-unchanged collection/baseline, late upsert, delete/reinsert, lost responses,
-partial-apply resync, direct collection deletion protection, preserving-data
-disconnect and late-write rejection after disconnect. WAL/catalog unit tests
-separately cover cursor recovery and real DynamoDB Local transactions. Evidence
-contains only local fixture credentials. The test never deploys or calls a cloud
-target. A configured Seoul target cannot prove an undeployed engine extension.
+It builds both executables and starts actual regional control, PostgreSQL and the
+engine's test-only HTTPS component target. The existing runner is supplied by the
+separate deferred engine experiment; these tests reuse only ordinary collections
+and writes, with no ingestion/association metadata. The engine checkout remains
+unchanged. The target uses real DTOs, catalog/routing, mutation handling, writer
+overlays and EFS WAL; its HTTPS adapter and project/catalog storage are fixtures.
+Using that harness does not require its optional ordering feature in the worker,
+and does not validate the planned EFS replacement or a deployed service.
+
+Current process tests prove ordinary continuous insert/update/delete and safe
+restart keep the same collection, and SIGKILL/restart stops uncertain upserts/deletes. Lost
+responses remain blocked, later source changes are not sent, management commands
+cannot bypass uncertainty, safe snapshot restart/resync keeps the collection,
+and missing source volumes are refused. A held ordinary request can later reach
+the target while the worker stays stopped. These tests do not claim delayed-write
+fencing, direct data-plane deletion protection or automatic uncertain recovery.
+Separate unit/local-PostgreSQL tests cover successful-response journal-save failure,
+prepared-but-unsent continuation, uncertain collection creation, ordinary insert/
+update/delete, source-checkpoint preservation and legacy journal rejection.
+No cloud deployment, live Seoul test, production load or native-image validation
+is included in these results.
