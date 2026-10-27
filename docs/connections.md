@@ -277,3 +277,12 @@ exercise PostgreSQL capture or LambdaDB writes. This bounded result leaves
 network-partition fencing, interrupted commits, growth/performance and real data
 movement across Fargate replacement as remaining gates. Normal worker storage
 and the source store's local-filesystem restriction remain unchanged.
+
+`TestEFSPartitionProbe` is a further opt-in journal experiment compiled into the
+same test image. The backend's `partition.py` coordinates task-local TCP 2049
+interruption, a cross-AZ ownership attempt, reconnecting the still-alive original
+handle, and post-stop inspection. Agent requests are constrained to the task-local
+ECS address and NFS port; normal worker code is unchanged. API success must be
+accompanied by blocked synchronous I/O. A stale handle's successful write while
+a replacement owns the journal is a storage fencing failure, not a reason to
+automatically retry or add connector-specific engine behavior.
