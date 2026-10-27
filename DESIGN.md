@@ -6,6 +6,28 @@
 
 This project should be a new LambdaDB-owned repository, not a public GitHub fork of `qdrant/migration`. We can reuse Apache-2.0 licensed code where it makes sense, but the target-side architecture should be LambdaDB-native rather than a Qdrant writer with names changed.
 
+## Current managed connections, October 27, 2026
+
+The current managed execution path is `cmd/connection-worker`,
+`Dockerfile.connection-worker` and `internal/connections`; see
+[the maintained connection contract](docs/connections.md). It uses one fixed
+ordinary customer collection with snapshot/continuous modes. The central backend
+owns management, while regional state and source capture remain here. No per-batch
+central call, engine ingestion metadata, EFS receipt facility or sealing API is
+required. Row reconstruction still uses the PostgreSQL capture implementation.
+
+Persist target intent and transmission state before sending. An uncertain outcome
+stops execution across restart and management commands; no automatic retry,
+readback-based recovery or replacement collection is used. Only an intent that
+never began transmission can continue automatically. The previous ordered engine
+experiment and generic idempotency prototype are deferred pending replacement-WAL
+acceptance design. Current journal format rejects prior ordered-ingestion state.
+
+The October 25 entry below describes the historical `cdc-worker` experiment and
+its generation-based recovery. That explicit legacy path does not define the
+current managed connection contract. The one-time migration CLI retains its own
+retry/checkpoint behavior and is unaffected by the managed-worker policy.
+
 ## Managed CDC ownership, October 25, 2026
 
 Steven approved consolidating data-movement execution in this existing repository.

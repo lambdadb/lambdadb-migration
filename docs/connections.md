@@ -188,8 +188,8 @@ Using that harness does not require its optional ordering feature in the worker,
 and does not validate the planned EFS replacement or a deployed service.
 
 Current process tests prove ordinary continuous insert/update/delete and safe
-restart keep the same collection, and SIGKILL/restart stops uncertain upserts/deletes. Lost
-responses remain blocked, later source changes are not sent, management commands
+restart keep the same collection. SIGKILL/restart stops uncertain upserts/deletes,
+and lost responses remain blocked. Later source changes are not sent, management commands
 cannot bypass uncertainty, safe snapshot restart/resync keeps the collection,
 and missing source volumes are refused. A held ordinary request can later reach
 the target while the worker stays stopped. These tests do not claim delayed-write
