@@ -265,3 +265,15 @@ EFS or prove fencing during a network partition. Production state remains a
 retained local volume until those gates are evaluated. This experiment does not
 change normal worker behavior or the LambdaDB engine, and does not authorize a
 deployment or automatic retry of an uncertain request.
+
+The October 28 approved Seoul Fargate/EFS run passed the three worker phases and
+three regional phases on actual EFS, with holders in AZ a and contenders/verifiers
+in AZ b. The worker recovered its exact source row/cut/LSN, accepted inventory
+and `sending` intent after holder termination, and refused retransmission. The
+regional probe preserved uncertainty and rejected stale or clearing observations.
+All tasks stopped and the isolated AWS resources/images were cleaned up and
+verified. The run used synthetic state and EFS-only task permissions; it did not
+exercise PostgreSQL capture or LambdaDB writes. This bounded result leaves
+network-partition fencing, interrupted commits, growth/performance and real data
+movement across Fargate replacement as remaining gates. Normal worker storage
+and the source store's local-filesystem restriction remain unchanged.
