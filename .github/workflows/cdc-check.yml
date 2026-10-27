@@ -7,6 +7,7 @@ on:
       - "cmd/connection-worker/**"
       - "internal/connections/**"
       - "Dockerfile.connection-worker"
+      - "Dockerfile.connection-volume-probe"
       - "scripts/cdc-test-*"
       - "Dockerfile.cdc-worker"
       - "go.mod"
@@ -21,6 +22,7 @@ on:
       - "cmd/connection-worker/**"
       - "internal/connections/**"
       - "Dockerfile.connection-worker"
+      - "Dockerfile.connection-volume-probe"
       - "scripts/cdc-test-*"
       - "Dockerfile.cdc-worker"
       - "go.mod"
@@ -46,3 +48,5 @@ jobs:
 
       - run: docker build -f Dockerfile.connection-worker -t lambdadb-connection-worker:ci .
       - run: docker run --rm lambdadb-connection-worker:ci -help
+      - run: docker build --platform linux/amd64 -f Dockerfile.connection-volume-probe -t connection-volume-probe:ci .
+      - run: docker run --rm connection-volume-probe:ci '-test.run=^TestStateVolumeProbeLocal$'

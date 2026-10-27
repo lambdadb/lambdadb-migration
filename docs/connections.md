@@ -248,3 +248,20 @@ mismatched state is refused. `resume_authorized` is always false. The command do
 not initialize, clear uncertainty, retry or contact a service. Follow the
 [incident inspection and recovery procedure](connection-recovery.md); current
 reads or elapsed time cannot authorize recovery from an uncertain remote write.
+
+## Experimental Fargate/EFS qualification
+
+`Dockerfile.connection-volume-probe` builds a separate Go test image that exercises
+the actual journal and PostgreSQL source store with synthetic data. Its
+`TestStateVolumeProbe` supports explicit `hold`, `contend` and `verify` phases
+through `CONNECTION_VOLUME_PROBE_DIR` and `CONNECTION_VOLUME_PROBE_PHASE`.
+The ordinary suite exercises those phases in separate local processes under
+`TestStateVolumeProbeLocal`. No PostgreSQL, target or secret lookup is performed.
+
+The backend's `infra/connections/efs-validation` owns the isolated Fargate/EFS
+qualification stack and runner. Its two-AZ experiment checks lock exclusion and
+retained state after process termination; successful local tests do not qualify
+EFS or prove fencing during a network partition. Production state remains a
+retained local volume until those gates are evaluated. This experiment does not
+change normal worker behavior or the LambdaDB engine, and does not authorize a
+deployment or automatic retry of an uncertain request.
