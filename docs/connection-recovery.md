@@ -111,7 +111,9 @@ Reference: [strace syscall injection](https://man7.org/linux/man-pages/man1/stra
 ## Paired backup and inspection-only restore
 
 After the regional controller confirms the original task STOPPED, use the separate
-`connection-state` operator executable. It needs no source/target secret, control
+`connection-state` operator executable. The ordinary worker image also includes `connection-state`; override its entrypoint
+for an operator task, retaining the confirmed-STOPPED precondition. It needs no
+source/target secret, control
 URL, AWS credential or network access. It never authorizes a resumed worker.
 
 ```sh

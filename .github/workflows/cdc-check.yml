@@ -56,6 +56,7 @@ jobs:
 
       - run: docker build -f Dockerfile.connection-worker -t lambdadb-connection-worker:ci .
       - run: docker run --rm lambdadb-connection-worker:ci -help
+      - run: docker run --rm --entrypoint connection-state lambdadb-connection-worker:ci -help
       - run: docker build --platform linux/amd64 -f Dockerfile.connection-volume-probe -t connection-volume-probe:ci .
       - run: docker run --rm connection-volume-probe:ci '-test.run=^TestStateVolumeProbeLocal$'
       - run: docker run --rm connection-volume-probe:ci '-test.run=^TestPartitionFault'
