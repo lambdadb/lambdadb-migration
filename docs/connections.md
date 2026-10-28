@@ -332,3 +332,32 @@ a container runtime stop timeout. This is synthetic storage/controller evidence;
 the actual replication worker was not run in Fargate in that experiment. It does
 not promote EFS or promise a recovery time. The backend guide records the exact
 boundary and conditional-claim race result.
+
+## Actual worker in Fargate, October 28, 2026
+
+A subsequent bounded Seoul run used this unchanged actual worker image against
+PostgreSQL 17.11 and the actual regional HTTPS executable on a private EC2 test
+fixture, plus a fresh collection in the approved LambdaDB project. Worker source
+and journal files remained on a scoped regional EFS access point; real Secrets
+Manager references supplied the source and project-key credentials. The fixture
+submitted preapproved regional metadata and did not exercise the central HTTP/JWT
+registration path, which has separate live management evidence.
+
+Five full document/field comparisons passed: initial snapshot, ongoing changes,
+offline changes after replacement, further changes and disconnected data. Cases
+included exact bigint PKs, column projection, JSON replacement/empty objects, null,
+delete/reinsert and PK changes. The first worker in ap-northeast-2a was confirmed
+STOPPED, then a read-only CLI task verified accepted sequence 6 with no pending
+intent. Source changes committed while the worker was absent. A non-initializing
+replacement in ap-northeast-2b resumed the same collection/checkpoint. Final
+inspection retained sequence 14, four managed IDs and resync revision 0, matching
+the independent operation count without rewriting the baseline. Observation
+sequences and source positions advanced. Disconnect removed the owned slot.
+
+The backend-owned maintained harness and guide live under
+`infra/connections/worker-validation`. Early harness routing/readiness failures
+were fixed and preserved before any worker ran; no existing connection state was
+reinitialized. This normal cross-AZ stop/restart test does not promote EFS to
+production, validate replication during an NFS partition, certify a customer
+provider or establish backup/restore, throughput or recovery-time guarantees.
+The uncertain-write policy and earlier storage failure evidence still apply.
