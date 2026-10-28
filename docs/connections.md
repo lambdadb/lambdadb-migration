@@ -53,8 +53,9 @@ pgx's normal verified TLS/root-certificate configuration.
 ## PostgreSQL prerequisites
 
 Use PostgreSQL 15+, one ordinary non-RLS/nonpartitioned table, and one integer,
-text or UUID primary-key column. Selected values support booleans, signed
-integers, text/varchar, UUID, JSON/JSONB and finite real/double. Reject selected
+text or UUID primary-key column; INCLUDE attributes are not key columns.
+Snapshots read ONLY the selected table, excluding traditional inheritance children.
+Selected values support booleans, signed integers, text/varchar, UUID, JSON/JSONB and finite real/double. Reject selected
 generated/unsupported types and non-key `id` fields. A customer chooses the source
 settings, dataset, optional columns, mode, target name and valid nonempty index
 configuration through the backend API. The collection defaults to the table name;
@@ -77,13 +78,22 @@ GRANT CONNECT ON DATABASE app TO lambdadb_sync;
 GRANT USAGE ON SCHEMA public TO lambdadb_sync;
 GRANT SELECT (product_id, title, body) ON public.products TO lambdadb_sync;
 CREATE PUBLICATION lambdadb_products
-  FOR TABLE public.products (product_id, title, body)
+  FOR TABLE ONLY public.products (product_id, title, body)
   WITH (publish = 'insert, update, delete, truncate');
 ```
 
 Configure source `wal_level=logical`, replication slot/sender capacity and WAL
-retention monitoring. Use default replica identity and retain the primary key in
-the publication. Row filters, multi-table publications and schema changes are
+retention monitoring. Continuous capture emits a transactional logical heartbeat
+when no commit has been processed for five seconds. It requires permission to
+execute the text overload of `pg_logical_emit_message` (normally granted to PUBLIC;
+restore an explicit grant if revoked, using the installed PostgreSQL signature).
+It writes no customer table rows. Only the heartbeat's decoded, locally persisted
+commit advances feedback, never its SQL
+return value or a keepalive's advertised WAL end. Paused, blocked and disconnected
+workers do not generate heartbeats. Long transactions and outages can still retain
+WAL: monitor `restart_lsn`, retained bytes and slot validity, and configure an
+appropriate `max_slot_wal_keep_size` with a recovery plan for slot invalidation.
+Use default replica identity and retain the primary key in the publication. Row filters, multi-table publications and schema changes are
 rejected. The worker never creates or deletes a customer publication. The
 publication's exact projection is selected for the initial exported snapshot;
 optional API columns must match that set. Publication filtering limits emitted
@@ -102,25 +112,35 @@ A paused connection still retains WAL; monitor disk pressure and retention.
 state, a local journal sequence, accepted managed document IDs, initial/resync
 cursors, approved references and observations. `source.db` retains source identity,
 selected complete rows, checkpoint, slot ownership and current/prepared cuts.
-Both are region-local, fsynced bbolt files protected by exclusive locks. This
-worker storage is independent of the engine's WAL storage; no EFS is required by
+Both are region-local, fsynced bbolt files protected by exclusive locks. Creation
+syncs parent directory entries before the first remote observation; failure stops
+initialization without claiming sequence one. This worker storage is independent of the engine's WAL storage; no EFS is required by
 the worker. Retained volume durability is required; remote state and HA are later.
 
 The worker calls ordinary supported collection creation and document upsert/delete
 HTTP APIs. It sends no `ingestion`, connection association or idempotency-key
 fields and requires no engine extension. A document HTTP 202 with a valid message
-confirms acceptance. There is no per-write Fetch, search gate or automatic write
-retry. Source checkpoint and replication feedback advance only after all target
+confirms acceptance. There is no per-write Fetch or search gate. Automatic retries
+are limited to definite non-acceptance: local pre-send cancellation/authorization
+failures and HTTP 429. Transport failures and ambiguous responses never retry.
+Source checkpoint and replication feedback advance only after all target
 operations in the source transaction have confirmed acceptance.
 
 Before sending, the journal persists `prepared`, then `sending`. A restart can
-send an intent still marked `prepared`, since transmission never started. An
+send an intent marked `prepared`, which means it has not been accepted: it was
+never sent, was rejected locally before transport, or received HTTP 429. An
 intent marked `sending` without locally saved acceptance stops the connection as
 `action_required` / `target_outcome_uncertain`. This includes transport failures,
 HTTP 408/5xx, invalid success bodies, termination during transmission and failure
 to save a successful response. A clear 3xx/4xx rejection other than 408 is recorded
-as `target_rejected`; redirects are never followed. No failure detail contains
-credentials or document content. Retrying cannot be enabled by restarting,
+as `target_rejected`, except HTTP 429; redirects are never followed. A 429 returns
+the exact intent to `prepared` and persists its retry deadline. Retries honor
+`Retry-After` (seconds or HTTP date), with a five-second minimum and exponential
+worker backoff up to one minute; a longer server deadline is not shortened.
+Transient throttling is reported as `target_unavailable`. A crash before recording
+the definite rejection still leaves `sending` blocked conservatively. No failure
+detail contains credentials or document content. Uncertain or permanent rejections
+cannot be made retryable by restarting,
 changing desired state, resync or authority renewal. No manual journal-clear or
 readback-based acceptance shortcut is supplied. Investigate/quiesce any late
 request before planning operator recovery; a delayed ordinary write can still
@@ -136,7 +156,9 @@ Normal restart with no uncertain request validates source continuity and retains
 the same collection/baseline. Explicit resync reconciles accepted managed IDs and
 persists cursors in the same collection, only when no uncertain/rejected intent
 blocks execution. Customer-only IDs are not removed. Partial initial/resync data
-can be visible. Completion certifies durable acceptance, not indexing visibility
+can be visible. The first snapshot is associated with its requested resync revision;
+retained older cuts are never relabeled as a newer request on restart. Completion
+certifies durable acceptance, not indexing visibility
 or atomic query visibility. Customer writes can diverge or be overwritten;
 conflict resolution and read/write key separation remain deferred.
 
@@ -147,10 +169,24 @@ are refused. A known created collection that disappears is not recreated. Direct
 data-plane deletion/recreation is not fenced by this worker; central management
 deletion guards remain, and operators must avoid replacing an active target.
 
-Pause cancels and joins capture. If cancellation leaves a sending intent, uncertainty
+Pause cancels and joins capture. An admitted target mutation drains under the
+existing 30-second HTTP timeout, allowing its receipt to be saved during shutdown.
+No new mutation starts after cancellation or observed authority expiry. Forced
+termination, timeout or response loss can still leave a sending intent; uncertainty
 takes precedence over paused/completed/disconnected status. Cached regional
 authority permits ongoing replication during control outages until expiry; the
 central backend is never in the batch path. Normal startup needs regional metadata.
+Startup and polling enforce the same
+command history: desired/resync revisions cannot regress, a revision cannot carry
+a different command (including expiry), and disconnection is terminal. Authority
+renewal therefore needs a newer desired revision.
+
+Unchanged lifecycle and desired-state writes do not commit. Unchanged observations
+are sent every five seconds; changes report on the next worker loop. Observation
+sequences remain durable. Source row counts/LSNs use a transaction-serialized
+in-memory summary rebuilt from retained state on restart, not a full row decode
+per report. Preflight retains its per-commit validation but reads table/publication
+metadata in one catalog statement instead of five round trips.
 
 Disconnect without uncertain work stops capture and removes only an owned inactive
 pgoutput slot. It makes no engine disconnect/seal call and preserves the collection.

@@ -24,6 +24,7 @@ var ErrTargetOutcomeUncertain = errors.New("target_outcome_uncertain")
 var ErrTargetRejected = errors.New("target_rejected")
 
 type Intent struct {
+	RetryAt   time.Time       `json:"retry_at,omitempty"`
 	Status    string          `json:"status"`
 	Sequence  uint64          `json:"sequence"`
 	Operation string          `json:"operation"`
@@ -84,6 +85,9 @@ func OpenJournal(path, fingerprint string, initialize bool) (*Journal, error) {
 			raw, _ := json.Marshal(State{Format: journalFormat, Fingerprint: fingerprint, ManagedIDs: map[string]bool{}, Data: json.RawMessage(`{}`)})
 			return b.Put([]byte("state"), raw)
 		})
+	}
+	if err == nil && initialize {
+		err = statefile.SyncParents(path)
 	}
 	if err == nil {
 		_, err = j.Load()
@@ -304,7 +308,7 @@ func (j *Journal) Accept(intent Intent) error {
 // UpdateData serializes lifecycle/cursor updates with observation sequencing.
 // It does not replace a concurrently accepted target intent or ID inventory.
 func (j *Journal) UpdateData(update func(json.RawMessage) (json.RawMessage, error)) error {
-	return j.db.Update(func(tx *bolt.Tx) error {
+	err := j.db.Update(func(tx *bolt.Tx) error {
 		s, err := j.decode(tx)
 		if err != nil {
 			return err
@@ -316,7 +320,32 @@ func (j *Journal) UpdateData(update func(json.RawMessage) (json.RawMessage, erro
 		if !json.Valid(data) {
 			return errors.New("invalid regional lifecycle state")
 		}
+		if bytes.Equal(s.Data, data) {
+			return errUnchanged
+		}
 		s.Data = data
 		return j.write(tx, s)
 	})
+	if errors.Is(err, errUnchanged) {
+		return nil
+	}
+	return err
 }
+
+// retryUnaccepted is used only with proof that this attempt was not accepted.
+func (j *Journal) retryUnaccepted(intent Intent, retryAt time.Time) error {
+	return j.db.Update(func(tx *bolt.Tx) error {
+		s, err := j.decode(tx)
+		if err != nil {
+			return err
+		}
+		if s.Pending == nil || !sameIntent(*s.Pending, intent) || s.Pending.Status != "sending" {
+			return ErrPending
+		}
+		s.Pending.Status = "prepared"
+		s.Pending.RetryAt = retryAt
+		return j.write(tx, s)
+	})
+}
+
+var errUnchanged = errors.New("regional data unchanged")

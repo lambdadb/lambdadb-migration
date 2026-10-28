@@ -74,7 +74,7 @@ func TestExplicitResnapshotRepairsOwnedSlotAndPromotesAfterTargetAcceptance(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = c.Store.RecordInitialContinuous("binding"); err != nil {
+	if err = c.Store.RecordInitialContinuous("binding", 0); err != nil {
 		t.Fatal(err)
 	}
 	execSQL(t, f.sql, "DELETE FROM "+f.c.Schema+".items WHERE id=1")
@@ -105,5 +105,58 @@ func TestExplicitResnapshotRepairsOwnedSlotAndPromotesAfterTargetAcceptance(t *t
 	}
 	if resumed, err := c.Resume(context.Background(), f.dsn); err != nil || resumed.LSN != fresh.LSN || resumed.Rows["1"] != nil {
 		t.Fatal("new cut not resumable", err)
+	}
+}
+
+func TestSourceProgressTracksSavePromotionAndRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "source.db")
+	s, err := OpenNewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.BindSource("binding", true); err != nil {
+		t.Fatal(err)
+	}
+	first := &State{Format: 1, Fingerprint: "source", SystemID: "system", LSN: 100, Columns: []Column{{Name: "id", OID: 23, Key: true}}, Rows: map[string]Row{"1": {"id": []byte(`1`)}}}
+	if err = s.Save(first); err != nil {
+		t.Fatal(err)
+	}
+	check := func(lsn, rows uint64) {
+		t.Helper()
+		p, e := s.Progress()
+		if e != nil || p == nil || p.LSN != lsn || p.Rows != rows {
+			t.Fatalf("progress: %+v %v", p, e)
+		}
+	}
+	check(100, 1)
+	if err = s.RecordInitialContinuous("binding", 3); err != nil {
+		t.Fatal(err)
+	}
+	next := *first
+	next.LSN = 200
+	next.Rows = map[string]Row{}
+	if err = s.SavePreparedCut(Cut{Format: 1, Fingerprint: "binding", Revision: 4, Continuous: &next}); err != nil {
+		t.Fatal(err)
+	}
+	check(100, 1)
+	if err = s.PromotePreparedCut("binding", 4); err != nil {
+		t.Fatal(err)
+	}
+	check(200, 0)
+	s.Close()
+	s, err = OpenExistingStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	check(200, 0)
+	first.LSN = 300
+	if err = s.Save(first); err != nil {
+		t.Fatal(err)
+	}
+	check(300, 1)
+	s.Close()
+	if _, err = s.Progress(); err == nil {
+		t.Fatal("cached progress bypassed failed store")
 	}
 }

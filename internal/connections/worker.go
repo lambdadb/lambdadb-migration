@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"time"
 
 	"github.com/jackc/pglogrepl"
@@ -28,7 +29,9 @@ type workerData struct {
 	Reason          string             `json:"reason,omitempty"`
 	TargetCreated   bool               `json:"target_created"`
 	CreationAttempt bool               `json:"creation_attempt"`
+	CreationRetryAt time.Time          `json:"creation_retry_at,omitempty"`
 	Ready           bool               `json:"ready"`
+	InitialRevision *uint64            `json:"initial_revision,omitempty"`
 	ReadyRevision   uint64             `json:"ready_revision"`
 	Plan            *syncPlan          `json:"plan,omitempty"`
 	Position        *protocol.Position `json:"position,omitempty"`
@@ -46,6 +49,8 @@ type Worker struct {
 	journal             *Journal
 	source              *postgrescdc.Store
 	fingerprint         string
+	lastReport          time.Time
+	lastObservation     protocol.Observation
 }
 
 func (w *Worker) data() (*workerData, error) {
@@ -97,31 +102,44 @@ func (w *Worker) report(ctx context.Context) error {
 	if err := w.storageError(); err != nil {
 		return err
 	}
-	var observation protocol.Observation
+	d, err := w.data()
+	if err != nil {
+		return err
+	}
+	observation := protocol.Observation{ProtocolVersion: 1, ConnectionID: d.Approved.Binding.ConnectionID, DesiredRevision: d.Approved.Control.DesiredRevision, Phase: d.Phase, ReasonCode: d.Reason, Position: d.Position, Rows: d.Rows}
+	if d.Ready {
+		observation.CompletedResyncRevision = d.ReadyRevision
+		if d.Approved.Binding.Mode == "continuous" {
+			state, err := w.source.Progress()
+			if err != nil {
+				return err
+			}
+			if state != nil {
+				observation.Position = &protocol.Position{SourceType: "postgresql", Offset: pglogrepl.LSN(state.LSN).String()}
+				observation.Rows = state.Rows
+			}
+		}
+	}
+	// Lifecycle changes report immediately; unchanged heartbeats remain below the
+	// regional service's 15-second staleness threshold without a per-second fsync.
+	if time.Since(w.lastReport) < 5*time.Second && reflect.DeepEqual(observation, w.lastObservation) {
+		return nil
+	}
 	if err := w.update(func(d *workerData) error {
 		if d.Sequence >= 1<<63-1 {
 			return errors.New("observation sequence exhausted")
 		}
 		d.Sequence++
-		observation = protocol.Observation{ProtocolVersion: 1, ConnectionID: d.Approved.Binding.ConnectionID, DesiredRevision: d.Approved.Control.DesiredRevision, Sequence: d.Sequence, Phase: d.Phase, ReasonCode: d.Reason, Position: d.Position, Rows: d.Rows}
-		if d.Ready {
-			observation.CompletedResyncRevision = d.ReadyRevision
-			if d.Approved.Binding.Mode == "continuous" {
-				state, e := w.source.Load()
-				if e != nil {
-					return e
-				}
-				if state != nil {
-					observation.Position = &protocol.Position{SourceType: "postgresql", Offset: pglogrepl.LSN(state.LSN).String()}
-					observation.Rows = uint64(len(state.Rows))
-				}
-			}
-		}
+		observation.Sequence = d.Sequence
 		return nil
 	}); err != nil {
 		return err
 	}
-	return w.Control.Report(ctx, observation)
+	err = w.Control.Report(ctx, observation)
+	observation.Sequence = 0
+	w.lastObservation = observation
+	w.lastReport = time.Now()
+	return err
 }
 
 // Run owns one connection's retained files for its entire lifetime. Regional
@@ -189,8 +207,8 @@ func (w *Worker) Run(ctx context.Context) error {
 		}
 	}
 	if err = w.update(func(d *workerData) error {
-		if approved.Control.DesiredRevision < d.Approved.Control.DesiredRevision {
-			return errors.New("regional desired state regressed")
+		if err := validateControl(d.Approved, approved); err != nil {
+			return err
 		}
 		d.Approved = approved
 		if observed != nil && observed.Observation.Sequence > d.Sequence {
@@ -210,6 +228,7 @@ func (w *Worker) Run(ctx context.Context) error {
 	var done chan error
 	var key, finished, lastDesired string
 	nextAttempt := time.Time{}
+	retryDelay := 5 * time.Second
 	stop := func() {
 		if cancel != nil {
 			cancel()
@@ -231,6 +250,8 @@ func (w *Worker) Run(ctx context.Context) error {
 			desiredKey = "expired"
 		}
 		if desiredKey != lastDesired {
+			nextAttempt = time.Time{}
+			retryDelay = 5 * time.Second
 			finished = ""
 			lastDesired = desiredKey
 		}
@@ -297,11 +318,19 @@ func (w *Worker) Run(ctx context.Context) error {
 			}
 			if result == nil {
 				finished = key
+				retryDelay = 5 * time.Second
 			} else {
 				if err := w.phase("action_required", reasonCode(result)); err != nil {
 					return err
 				}
-				nextAttempt = time.Now().Add(5 * time.Second)
+				nextAttempt = time.Now().Add(retryDelay)
+				var retry *retryTargetError
+				if errors.As(result, &retry) {
+					if retry.at.After(nextAttempt) {
+						nextAttempt = retry.at
+					}
+					retryDelay = min(retryDelay*2, time.Minute)
+				}
 			}
 			key = ""
 		case <-ticker.C:
@@ -312,8 +341,8 @@ func (w *Worker) Run(ctx context.Context) error {
 					return errors.New("immutable connection binding changed")
 				}
 				if e = w.update(func(d *workerData) error {
-					if next.Control.DesiredRevision < d.Approved.Control.DesiredRevision || next.Control.ResyncRevision < d.Approved.Control.ResyncRevision || (d.Approved.Control.DesiredState == "disconnected" && next.Control.DesiredState != "disconnected") {
-						return errors.New("regional desired state regressed")
+					if err := validateControl(d.Approved, next); err != nil {
+						return err
 					}
 					d.Approved = next
 					return nil
@@ -333,6 +362,8 @@ func reasonCode(err error) string {
 		return "target_rejected"
 	}
 	switch err.Error() {
+	case "target_rate_limited":
+		return "target_unavailable"
 	case "authority_expired":
 		return "authority_expired"
 	case "target_conflict":
@@ -445,9 +476,26 @@ type guardedTarget struct {
 	check func() error
 }
 
+func (t guardedTarget) authorize() error { return t.check() }
+
 func (t guardedTarget) Send(ctx context.Context, p Intent) error {
 	if err := t.check(); err != nil {
-		return err
+		return unsentError{err}
 	}
 	return t.IntentTarget.Send(ctx, p)
+}
+
+// Startup and polling must enforce the same immutable command history.
+func validateControl(previous, next protocol.Approved) error {
+	if protocol.Fingerprint(previous.Binding) != protocol.Fingerprint(next.Binding) {
+		return errors.New("immutable connection binding changed")
+	}
+	before, after := previous.Control, next.Control
+	if after.DesiredRevision < before.DesiredRevision || after.ResyncRevision < before.ResyncRevision || (before.DesiredState == "disconnected" && after.DesiredState != "disconnected") {
+		return errors.New("regional desired state regressed")
+	}
+	if after.DesiredRevision == before.DesiredRevision && (after.ProtocolVersion != before.ProtocolVersion || after.ConnectionID != before.ConnectionID || after.DesiredState != before.DesiredState || after.ResyncRevision != before.ResyncRevision || !after.AuthorityExpiresAt.Equal(before.AuthorityExpiresAt)) {
+		return errors.New("conflicting regional control revision")
+	}
+	return nil
 }

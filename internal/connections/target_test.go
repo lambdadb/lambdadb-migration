@@ -81,7 +81,6 @@ func TestOrdinaryAcceptanceAndDefiniteRejectionClassification(t *testing.T) {
 		{202, strings.Repeat("x", 4097), ErrTargetOutcomeUncertain},
 		{400, `{"message":"invalid"}`, ErrTargetRejected},
 		{401, `{"message":"unauthorized"}`, ErrTargetRejected},
-		{429, `{"message":"limited"}`, ErrTargetRejected},
 		{408, `{}`, ErrTargetOutcomeUncertain},
 		{503, `{}`, ErrTargetOutcomeUncertain},
 	} {

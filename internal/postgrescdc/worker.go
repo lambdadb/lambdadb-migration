@@ -166,7 +166,7 @@ func (w *Worker) Run(ctx context.Context, dsn string) error {
 		}
 	}
 	report("rebuilding", false)
-	keys := sortedKeys(state.Rows)
+	keys := SortedRowIDs(state.Rows)
 	for _, id := range keys {
 		if err = w.Target.Put(ctx, generation, id, state.Rows[id]); err != nil {
 			return err
@@ -208,7 +208,7 @@ func (w *Worker) Run(ctx context.Context, dsn string) error {
 				return errors.New("source schema drift; action required")
 			}
 			position := pglogrepl.LSN(state.LSN)
-			if err = pglogrepl.SendStandbyStatusUpdate(ctx, repl, pglogrepl.StandbyStatusUpdate{WALWritePosition: position, WALFlushPosition: position, WALApplyPosition: position}); err != nil {
+			if err = sendFeedback(ctx, repl, position); err != nil {
 				return err
 			}
 			w.Serving.healthy(run)
@@ -303,7 +303,7 @@ func (w *Worker) Run(ctx context.Context, dsn string) error {
 				report("verifying", true)
 				if err = verifyWithFeedback(ctx, w.Target, generation, state.Rows, func() error {
 					position := pglogrepl.LSN(state.LSN)
-					return pglogrepl.SendStandbyStatusUpdate(ctx, repl, pglogrepl.StandbyStatusUpdate{WALWritePosition: position, WALFlushPosition: position, WALApplyPosition: position})
+					return sendFeedback(ctx, repl, position)
 				}); err != nil {
 					return err
 				}
@@ -369,7 +369,8 @@ func verifyWithFeedback(ctx context.Context, target Target, generation string, r
 	}
 }
 
-func sortedKeys(rows map[string]Row) []string {
+// SortedRowIDs returns deterministic document operation order.
+func SortedRowIDs(rows map[string]Row) []string {
 	keys := make([]string, 0, len(rows))
 	for id := range rows {
 		keys = append(keys, id)
@@ -380,14 +381,14 @@ func sortedKeys(rows map[string]Row) []string {
 func applyRows(ctx context.Context, target Target, generation string, previous, next map[string]Row) error {
 	// Full new row images first: PK changes never delete the only recoverable
 	// image. Both this image and the source transaction remain recoverable.
-	for _, id := range sortedKeys(next) {
+	for _, id := range SortedRowIDs(next) {
 		if !equalJSON(previous[id], next[id]) {
 			if err := target.Put(ctx, generation, id, next[id]); err != nil {
 				return err
 			}
 		}
 	}
-	for _, id := range sortedKeys(previous) {
+	for _, id := range SortedRowIDs(previous) {
 		if _, ok := next[id]; !ok {
 			if err := target.Delete(ctx, generation, id); err != nil {
 				return err

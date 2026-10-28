@@ -77,7 +77,7 @@ func TestStateVolumeProbe(t *testing.T) {
 			Rows:    map[string]postgrescdc.Row{"9007199254740993": {"pk": json.RawMessage(`9007199254740993`)}}}); err != nil {
 			t.Fatal(err)
 		}
-		if err = source.RecordInitialContinuous("volume-probe"); err != nil {
+		if err = source.RecordInitialContinuous("volume-probe", 0); err != nil {
 			t.Fatal(err)
 		}
 		if err = j.Apply(context.Background(), intentSender(func(context.Context, Intent) error { return nil }), "upsert", json.RawMessage(`{"docs":[{"id":"accepted"}]}`)); err != nil {

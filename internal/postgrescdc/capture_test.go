@@ -8,6 +8,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgx/v5"
 )
 
 func captureFixture(t *testing.T) (*fixture, *Capture) {
@@ -203,5 +206,76 @@ func TestCaptureDoesNotCheckpointAfterLocalAuthorityExpiresDuringApply(t *testin
 	saved, err := c.Store.Load()
 	if err != nil || saved.LSN != baseline.LSN {
 		t.Fatal("expired authority advanced checkpoint", err)
+	}
+}
+
+func TestIdleCaptureAdvancesFeedbackWithoutLosingOpenTransaction(t *testing.T) {
+	f, c := captureFixture(t)
+	ctx := context.Background()
+	baseline, err := c.Initialize(ctx, f.dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This transaction starts before the heartbeat but commits after restart.
+	tx, err := f.sql.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, "UPDATE "+f.c.Schema+".items SET title='late commit' WHERE id=1"); err != nil {
+		t.Fatal(err)
+	}
+	other, err := pgx.Connect(ctx, f.dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close(ctx)
+	execSQL(t, other, "CREATE TABLE "+f.c.Schema+".unpublished(value text)")
+	execSQL(t, other, "INSERT INTO "+f.c.Schema+".unpublished SELECT repeat('wal',1000) FROM generate_series(1,100)")
+	var changed atomic.Int32
+	apply := func(_ context.Context, old, next *State) error {
+		if !equalJSON(old.Rows, next.Rows) {
+			changed.Add(1)
+		}
+		return nil
+	}
+	cancel, done := runCapture(t, c, f.dsn, apply)
+	saved := awaitCapture(t, c, func(s *State) bool { return s.LSN > baseline.LSN })
+	if !equalJSON(saved.Rows, baseline.Rows) || changed.Load() != 0 {
+		t.Fatal("heartbeat applied uncommitted rows")
+	}
+	config, _ := c.Selection.config()
+	deadline := time.Now().Add(5 * time.Second)
+	advanced := false
+	for time.Now().Before(deadline) {
+		var confirmed string
+		if err = other.QueryRow(ctx, "SELECT confirmed_flush_lsn::text FROM pg_replication_slots WHERE slot_name=$1", config.Slot).Scan(&confirmed); err != nil {
+			t.Fatal(err)
+		}
+		lsn, e := pglogrepl.ParseLSN(confirmed)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if uint64(lsn) >= saved.LSN {
+			advanced = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	stopCapture(t, cancel, done)
+	if !advanced {
+		t.Fatal("idle slot feedback did not advance")
+	}
+	if _, err = c.Resume(ctx, f.dsn); err != nil {
+		t.Fatal("heartbeat checkpoint not resumable", err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cancel, done = runCapture(t, c, f.dsn, apply)
+	awaitCapture(t, c, func(s *State) bool { return string(s.Rows["1"]["title"]) == `"late commit"` })
+	stopCapture(t, cancel, done)
+	if changed.Load() != 1 {
+		t.Fatal("open transaction was lost or applied twice", changed.Load())
 	}
 }

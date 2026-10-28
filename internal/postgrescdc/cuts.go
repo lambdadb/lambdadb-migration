@@ -151,7 +151,10 @@ func (s *Store) CurrentSnapshot(fingerprint string) (*Cut, error) {
 	})
 	return cut, err
 }
-func (s *Store) RecordInitialContinuous(fingerprint string) error {
+func (s *Store) RecordInitialContinuous(fingerprint string, revision uint64) error {
+	if revision > math.MaxInt64 {
+		return errors.New("invalid initial source revision")
+	}
 	state, err := s.Load()
 	if err != nil {
 		return err
@@ -166,12 +169,12 @@ func (s *Store) RecordInitialContinuous(fingerprint string) error {
 		}
 		if raw := b.Get([]byte("current")); raw != nil {
 			var r CutReceipt
-			if json.Unmarshal(raw, &r) != nil || r.Revision != 0 || r.Mode != "continuous" {
+			if json.Unmarshal(raw, &r) != nil || r.Revision != revision || r.Mode != "continuous" {
 				return errors.New("source cut already advanced")
 			}
 			return nil
 		}
-		raw, _ := json.Marshal(CutReceipt{Mode: "continuous"})
+		raw, _ := json.Marshal(CutReceipt{Revision: revision, Mode: "continuous"})
 		return b.Put([]byte("current"), raw)
 	})
 }
@@ -205,6 +208,7 @@ func (s *Store) PromotePreparedCut(fingerprint string, revision uint64) error {
 		}
 		mode := "snapshot"
 		if cut.Continuous != nil {
+			s.progress = nil
 			mode = "continuous"
 			state, err := json.Marshal(cut.Continuous)
 			if err != nil {

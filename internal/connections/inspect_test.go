@@ -45,7 +45,7 @@ func inspectionFixture(t *testing.T, mode string) (string, *Journal, *postgrescd
 	if mode == "continuous" {
 		err = s.Save(&postgrescdc.State{Format: 1, Fingerprint: "capture-fingerprint", SystemID: "source-system", LSN: 100, Columns: columns, Rows: rows})
 		if err == nil {
-			err = s.RecordInitialContinuous(fingerprint)
+			err = s.RecordInitialContinuous(fingerprint, 0)
 		}
 	} else {
 		err = s.SavePreparedCut(postgrescdc.Cut{Format: 1, Fingerprint: fingerprint,

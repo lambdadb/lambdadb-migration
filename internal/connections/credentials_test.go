@@ -3,9 +3,10 @@ package connections
 import (
 	"context"
 	"encoding/json"
-	"github.com/lambdadb/lambdadb-migration/internal/postgrescdc"
 	"net/url"
 	"testing"
+
+	"github.com/lambdadb/lambdadb-migration/internal/postgrescdc"
 )
 
 func TestCredentialReferencesAndTLSFailBeforeNetwork(t *testing.T) {
@@ -33,10 +34,10 @@ func TestCredentialReferencesAndTLSFailBeforeNetwork(t *testing.T) {
 	}
 }
 func TestChangedLargeIntegerIsNotDroppedAsEqual(t *testing.T) {
-	if equalRow(mapRow(`9007199254740992`), mapRow(`9007199254740993`)) {
+	if postgrescdc.EqualRows(mapRow(`9007199254740992`), mapRow(`9007199254740993`)) {
 		t.Fatal("large integer source update collapsed")
 	}
-	if !equalRow(mapRow(`{"a":1,"b":2}`), mapRow(`{ "b":2, "a":1 }`)) {
+	if !postgrescdc.EqualRows(mapRow(`{"a":1,"b":2}`), mapRow(`{ "b":2, "a":1 }`)) {
 		t.Fatal("object order changed row equality")
 	}
 }

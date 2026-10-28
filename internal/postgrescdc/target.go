@@ -323,3 +323,6 @@ func (t *LambdaTarget) SearchToken(ctx context.Context, generation, field, term 
 	}
 	return docs, result.Total, nil
 }
+
+// EqualRows compares JSON values exactly, including equivalent numeric spellings.
+func EqualRows(left, right Row) bool { return equalJSON(left, right) }

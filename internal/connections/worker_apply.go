@@ -1,13 +1,13 @@
 package connections
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"reflect"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pglogrepl"
 	"github.com/lambdadb/lambdadb-migration/internal/connections/protocol"
@@ -22,6 +22,9 @@ func (w *Worker) ensureTarget(ctx context.Context, target *APITarget) error {
 	}
 	if d.CreationAttempt && !d.TargetCreated {
 		return ErrTargetOutcomeUncertain
+	}
+	if time.Now().Before(d.CreationRetryAt) {
+		return &retryTargetError{d.CreationRetryAt}
 	}
 	meta, err := target.Describe(ctx)
 	if err != nil {
@@ -44,9 +47,22 @@ func (w *Worker) ensureTarget(ctx context.Context, target *APITarget) error {
 	if err = w.update(func(d *workerData) error { d.CreationAttempt = true; return nil }); err != nil {
 		return err
 	}
-	if err = target.CreateOnce(ctx); err != nil {
-		if errors.Is(err, ErrTargetRejected) {
-			if e := w.update(func(d *workerData) error { d.CreationAttempt = false; return nil }); e != nil {
+	if err = w.authority(); err != nil {
+		err = unsentError{err}
+	} else {
+		err = target.CreateOnce(ctx)
+	}
+	if err != nil {
+		var retry *retryTargetError
+		var unsent unsentError
+		if errors.Is(err, ErrTargetRejected) || errors.As(err, &retry) || errors.As(err, &unsent) {
+			if e := w.update(func(d *workerData) error {
+				d.CreationAttempt = false
+				if retry != nil {
+					d.CreationRetryAt = retry.at
+				}
+				return nil
+			}); e != nil {
 				return ErrTargetOutcomeUncertain
 			}
 			return err
@@ -85,11 +101,32 @@ func (w *Worker) prepareAndApply(ctx context.Context, a protocol.Approved, selec
 		return errors.New("state_invalid")
 	}
 	if receipt == nil {
+		initialRevision := a.Control.ResyncRevision
+		if pending != nil {
+			initialRevision = pending.Revision
+		}
+		if a.Binding.Mode == "continuous" {
+			if d.InitialRevision != nil {
+				initialRevision = *d.InitialRevision
+			} else {
+				// Legacy initialized state predates revision-aware bootstrap and belongs to 0.
+				retained, e := w.source.Load()
+				if e != nil {
+					return e
+				}
+				if retained != nil {
+					initialRevision = 0
+				}
+				if err = w.update(func(d *workerData) error { d.InitialRevision = &initialRevision; return nil }); err != nil {
+					return err
+				}
+			}
+		}
 		if a.Binding.Mode == "continuous" {
 			if _, err = capture.Initialize(ctx, dsn); err != nil {
 				return errors.New("source_setup_required")
 			}
-			if err = w.source.RecordInitialContinuous(w.fingerprint); err != nil {
+			if err = w.source.RecordInitialContinuous(w.fingerprint, initialRevision); err != nil {
 				return err
 			}
 		} else {
@@ -98,12 +135,12 @@ func (w *Worker) prepareAndApply(ctx context.Context, a protocol.Approved, selec
 				if e != nil {
 					return errors.New("source_setup_required")
 				}
-				pending = &postgrescdc.Cut{Format: 1, Fingerprint: w.fingerprint, Snapshot: snapshot}
+				pending = &postgrescdc.Cut{Format: 1, Fingerprint: w.fingerprint, Revision: initialRevision, Snapshot: snapshot}
 				if err = w.source.SavePreparedCut(*pending); err != nil {
 					return err
 				}
 			}
-			if err = w.source.PromotePreparedCut(w.fingerprint, 0); err != nil {
+			if err = w.source.PromotePreparedCut(w.fingerprint, initialRevision); err != nil {
 				return err
 			}
 		}
@@ -191,14 +228,6 @@ func (w *Worker) prepareAndApply(ctx context.Context, a protocol.Approved, selec
 		return nil
 	})
 }
-func sortedRows(rows map[string]postgrescdc.Row) []string {
-	ids := make([]string, 0, len(rows))
-	for id := range rows {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	return ids
-}
 func (w *Worker) reconcile(ctx context.Context, target IntentTarget, revision uint64, rows map[string]postgrescdc.Row) error {
 	d, err := w.data()
 	if err != nil {
@@ -229,7 +258,7 @@ func (w *Worker) reconcile(ctx context.Context, target IntentTarget, revision ui
 		}
 	}
 	plan := *d.Plan
-	ids := sortedRows(rows)
+	ids := postgrescdc.SortedRowIDs(rows)
 	if plan.DeleteCursor < 0 || plan.DeleteCursor > len(plan.Deletes) || plan.PutCursor < 0 || plan.PutCursor > len(ids) {
 		return errors.New("state_invalid")
 	}
@@ -280,28 +309,16 @@ func (w *Worker) put(ctx context.Context, target IntentTarget, id string, row po
 	}
 	return nil
 }
-func equalRow(left, right postgrescdc.Row) bool {
-	// Keep integers exact and ignore object-key order/insignificant whitespace.
-	decode := func(row postgrescdc.Row) any {
-		raw, _ := json.Marshal(row)
-		d := json.NewDecoder(bytes.NewReader(raw))
-		d.UseNumber()
-		var value any
-		_ = d.Decode(&value)
-		return value
-	}
-	return reflect.DeepEqual(decode(left), decode(right))
-}
 func (w *Worker) applyChanges(ctx context.Context, target IntentTarget, old, next map[string]postgrescdc.Row) error {
-	for _, id := range sortedRows(old) {
+	for _, id := range postgrescdc.SortedRowIDs(old) {
 		if next[id] == nil {
 			if err := w.delete(ctx, target, id); err != nil {
 				return err
 			}
 		}
 	}
-	for _, id := range sortedRows(next) {
-		if old[id] == nil || !equalRow(old[id], next[id]) {
+	for _, id := range postgrescdc.SortedRowIDs(next) {
+		if old[id] == nil || !postgrescdc.EqualRows(old[id], next[id]) {
 			if err := w.put(ctx, target, id, next[id]); err != nil {
 				return err
 			}

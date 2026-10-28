@@ -508,9 +508,14 @@ reconstruction state.
 Tests prove retained-baseline restart, pending WAL replay, target rejection before
 checkpoint advance, selected-column TOAST/PK changes and owned slot cleanup. This
 is still a source adapter and common journal/transport, not a completed managed
-worker deployment. Idle unrelated database WAL and outage slot-retention limits
-need operational monitoring; this bounded capture only acknowledges processed,
-durably accepted source positions, never a keepalive's advertised WAL end.
+worker deployment. Managed capture now emits a transactional logical heartbeat
+after five seconds
+without a processed commit. It requires `pg_logical_emit_message` execution
+permission and `messages 'true'`; the decoded heartbeat commit is saved before
+feedback. It does not acknowledge the SQL return position or a keepalive's
+advertised WAL end. Retained WAL and slot validity still need monitoring during
+long transactions, pause, target uncertainty and outages. This does not change
+the historical generation worker's heartbeat policy.
 
 ## Managed document ownership during partial application
 

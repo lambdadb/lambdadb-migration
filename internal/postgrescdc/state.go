@@ -38,7 +38,35 @@ type State struct {
 // A bbolt write transaction atomically fsyncs the complete row image and offset.
 // Its exclusive file lock is our single-host execution ownership mechanism.
 // Never copy an active database or put it on a network filesystem.
-type Store struct{ db *statefile.DB }
+type Store struct {
+	db *statefile.DB
+	// Accessed only inside the serialized database transactions.
+	progress *SourceProgress
+}
+
+type SourceProgress struct {
+	LSN  uint64
+	Rows uint64
+}
+
+// Progress avoids decoding the retained row image on every observation. The
+// cache is reconstructed on open and invalidated by cut promotion.
+func (s *Store) Progress() (*SourceProgress, error) {
+	var result *SourceProgress
+	err := s.db.View(func(tx *bolt.Tx) error {
+		if s.progress == nil {
+			if _, err := s.load(tx); err != nil {
+				return err
+			}
+		}
+		if s.progress != nil {
+			copy := *s.progress
+			result = &copy
+		}
+		return nil
+	})
+	return result, err
+}
 
 type bootstrap struct {
 	Fingerprint string
@@ -113,30 +141,42 @@ func openStore(path string, create bool) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open regional state (exclusive ownership required): %w", err)
 	}
+	if create {
+		if err = statefile.SyncParents(path); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+	}
 	return &Store{db: statefile.Guard(db)}, nil
 }
 func (s *Store) StorageError() error { return s.db.Err() }
 func (s *Store) Close() error        { return s.db.Close() }
 func (s *Store) Load() (*State, error) {
 	var state *State
-	err := s.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("cdc"))
-		if b == nil {
-			return nil
-		}
-		v := b.Get([]byte("state"))
-		if v == nil {
-			return errors.New("regional state missing")
-		}
-		if len(v) > MaxStateBytes {
-			return errors.New("regional state exceeds budget")
-		}
-		if err := json.Unmarshal(v, &state); err != nil {
-			return errors.New("corrupt regional state; resync required")
-		}
-		return validateState(state)
-	})
+	err := s.db.View(func(tx *bolt.Tx) error { var err error; state, err = s.load(tx); return err })
 	return state, err
+}
+func (s *Store) load(tx *bolt.Tx) (*State, error) {
+	b := tx.Bucket([]byte("cdc"))
+	if b == nil {
+		return nil, nil
+	}
+	v := b.Get([]byte("state"))
+	if v == nil {
+		return nil, errors.New("regional state missing")
+	}
+	if len(v) > MaxStateBytes {
+		return nil, errors.New("regional state exceeds budget")
+	}
+	var state *State
+	if json.Unmarshal(v, &state) != nil {
+		return nil, errors.New("corrupt regional state; resync required")
+	}
+	if err := validateState(state); err != nil {
+		return nil, err
+	}
+	s.progress = &SourceProgress{LSN: state.LSN, Rows: uint64(len(state.Rows))}
+	return state, nil
 }
 func validateState(state *State) error {
 	if state == nil || state.Format != 1 || state.LSN == 0 || state.Fingerprint == "" || state.SystemID == "" {
@@ -205,6 +245,7 @@ func (s *Store) save(state *State, run *Generation) error {
 		if err := bucket.Put([]byte("state"), b); err != nil {
 			return err
 		}
+		s.progress = &SourceProgress{LSN: state.LSN, Rows: uint64(len(state.Rows))}
 		if tx.Bucket([]byte("bootstrap")) != nil {
 			return tx.DeleteBucket([]byte("bootstrap"))
 		}

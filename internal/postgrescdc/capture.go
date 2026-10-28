@@ -221,7 +221,7 @@ func (c *Capture) Stream(ctx context.Context, dsn string, apply func(context.Con
 	if !c.Selection.matches(state.Columns) {
 		return errors.New("requested columns differ from publication projection")
 	}
-	if err = pglogrepl.StartReplication(ctx, repl, config.Slot, pglogrepl.LSN(state.LSN), pglogrepl.StartReplicationOptions{PluginArgs: []string{"proto_version '1'", "publication_names '" + config.Publication + "'"}}); err != nil {
+	if err = pglogrepl.StartReplication(ctx, repl, config.Slot, pglogrepl.LSN(state.LSN), pglogrepl.StartReplicationOptions{PluginArgs: []string{"proto_version '1'", "publication_names '" + config.Publication + "'", "messages 'true'"}}); err != nil {
 		return err
 	}
 	if ready != nil {
@@ -229,18 +229,17 @@ func (c *Capture) Stream(ctx context.Context, dsn string, apply func(context.Con
 	}
 	decoder := &transactionDecoder{state: state}
 	nextFeedback := time.Now()
+	nextHeartbeat := time.Now().Add(5 * time.Second)
 	check := func() error {
-		if c.Authorize != nil {
-			if e := c.Authorize(); e != nil {
-				return e
-			}
-		}
 		oid, columns, e := preflight(ctx, sql, config)
 		if e != nil {
 			return e
 		}
 		if oid != state.RelationID || !reflect.DeepEqual(columns, state.Columns) || !c.Selection.matches(columns) {
 			return errors.New("source schema or selection changed")
+		}
+		if c.Authorize != nil {
+			return c.Authorize()
 		}
 		return nil
 	}
@@ -252,13 +251,22 @@ func (c *Capture) Stream(ctx context.Context, dsn string, apply func(context.Con
 			if err = check(); err != nil {
 				return err
 			}
-			if c.Authorize != nil {
-				if e := c.Authorize(); e != nil {
-					return e
+			if !time.Now().Before(nextHeartbeat) {
+				// A transactional logical message yields an ordered Commit even when the
+				// selected table is quiet. Never acknowledge the SQL result or WAL end;
+				// only the decoded commit may advance the durable checkpoint below.
+				if _, err = sql.Exec(ctx, `SELECT pg_logical_emit_message(true,'lambdadb_capture_heartbeat','')`); err != nil {
+					return errors.New("source heartbeat unavailable; check logical message permission")
+				}
+				nextHeartbeat = time.Now().Add(5 * time.Second)
+				if c.Authorize != nil {
+					if err = c.Authorize(); err != nil {
+						return err
+					}
 				}
 			}
 			position := pglogrepl.LSN(state.LSN)
-			if err = pglogrepl.SendStandbyStatusUpdate(ctx, repl, pglogrepl.StandbyStatusUpdate{WALWritePosition: position, WALFlushPosition: position, WALApplyPosition: position}); err != nil {
+			if err = sendFeedback(ctx, repl, position); err != nil {
 				return err
 			}
 			nextFeedback = time.Now().Add(time.Second)
@@ -320,6 +328,7 @@ func (c *Capture) Stream(ctx context.Context, dsn string, apply func(context.Con
 			}
 			state = next
 			decoder.state = state
+			nextHeartbeat = time.Now().Add(5 * time.Second)
 		default:
 			return errors.New("unsupported source replication frame")
 		}

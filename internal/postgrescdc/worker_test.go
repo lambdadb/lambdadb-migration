@@ -480,6 +480,22 @@ func TestPostgresRejectLostContinuityAndConfigDrift(t *testing.T) {
 			}
 			switch cause {
 			case "slot":
+				// Client close completes before the server necessarily releases the slot.
+				// Wait for that lifecycle boundary before injecting deliberate slot loss.
+				deadline := time.Now().Add(5 * time.Second)
+				for {
+					var active bool
+					if err := f.sql.QueryRow(context.Background(), "SELECT active FROM pg_replication_slots WHERE slot_name=$1", f.c.Slot).Scan(&active); err != nil {
+						t.Fatal(err)
+					}
+					if !active {
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatal("stopped replication slot remained active")
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
 				execSQL(t, f.sql, "SELECT pg_drop_replication_slot('"+f.c.Slot+"')")
 			case "schema":
 				execSQL(t, f.sql, "ALTER TABLE "+f.c.Schema+".items ADD COLUMN unexpected text")

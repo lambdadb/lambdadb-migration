@@ -39,7 +39,7 @@ identifies immutable local request bytes; it is not a server acceptance receipt.
 
 | State | Interpretation | Current allowed action |
 |---|---|---|
-| `prepared` | The retained intent has not begun transmission under this journal format. | Preserve the files. The normal worker can attempt its first send only after its ordinary authority/source validation succeeds. |
+| `prepared` | Non-acceptance is established: never sent, locally rejected before transport, or HTTP 429 persisted with its retry deadline. | Normal worker restart may send the same intent after its deadline and authority checks. Never manually clear or relabel it. |
 | `sending` | The request may have reached the target without locally saved confirmation. | Keep execution blocked. Do not resend, resync, initialize or disconnect to bypass it. |
 | `rejected` | A definite HTTP rejection was saved. | Investigate configuration/authorization and preserve evidence. No journal-clear/retry command is supplied. |
 | Saved `target_outcome_uncertain` | Uncertainty was independently retained, even if acceptance bytes later survived. | Keep execution blocked; absence of `pending` does not clear this condition. |

@@ -24,7 +24,6 @@ func replicationConn(ctx context.Context, dsn string) (*pgconn.PgConn, error) {
 }
 
 type sourceQuery interface {
-	Query(context.Context, string, ...any) (pgx.Rows, error)
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 type tableColumn struct {
@@ -32,96 +31,102 @@ type tableColumn struct {
 	Generated string
 }
 
-func inspectTable(ctx context.Context, conn sourceQuery, c Config, continuous bool) (uint32, []tableColumn, error) {
-	var oid uint32
-	var kind, identity string
-	var rls, partition bool
-	var version int
-	if err := conn.QueryRow(ctx, `SELECT current_setting('server_version_num')::int`).Scan(&version); err != nil {
-		return 0, nil, err
+// Read catalog metadata in one statement so each validation has one catalog
+// snapshot and one network round trip, including transaction-time drift checks.
+const tableInspectionFields = `current_setting('server_version_num')::int,
+ c.oid,c.relkind::text,c.relreplident::text,c.relrowsecurity,c.relispartition,
+ (SELECT jsonb_agg(jsonb_build_object('Name',a.attname,'OID',a.atttypid::bigint,
+ 'Modifier',a.atttypmod,'Key',COALESCE(a.attnum=ANY(i.indkey[0:i.indnkeyatts-1]),false),
+ 'Generated',a.attgenerated::text) ORDER BY a.attnum)
+ FROM pg_attribute a LEFT JOIN pg_index i ON i.indrelid=a.attrelid AND i.indisprimary
+ WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped)`
+const tableInspectionFrom = ` FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+ WHERE n.nspname=$1 AND c.relname=$2`
+
+type tableInspection struct {
+	version        int
+	oid            uint32
+	kind, identity string
+	rls, partition bool
+	columns        []tableColumn
+}
+
+func (t *tableInspection) destinations() []any {
+	return []any{&t.version, &t.oid, &t.kind, &t.identity, &t.rls, &t.partition, &t.columns}
+}
+func (t *tableInspection) validate(continuous bool) error {
+	if t.version < 150000 {
+		return errors.New("PostgreSQL 15+ required")
 	}
-	if version < 150000 {
-		return 0, nil, errors.New("PostgreSQL 15+ required")
+	if t.kind != "r" || (continuous && t.identity != "d") || t.rls || t.partition {
+		return errors.New("ordinary non-RLS, non-partitioned table with default replica identity required")
 	}
-	err := conn.QueryRow(ctx, `SELECT c.oid,c.relkind::text,c.relreplident::text,c.relrowsecurity,c.relispartition
-	 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relname=$2`, c.Schema, c.Table).Scan(&oid, &kind, &identity, &rls, &partition)
-	if err != nil {
-		return 0, nil, err
-	}
-	if kind != "r" || (continuous && identity != "d") || rls || partition {
-		return 0, nil, errors.New("ordinary non-RLS, non-partitioned table with default replica identity required")
-	}
-	rows, err := conn.Query(ctx, `SELECT a.attname,a.atttypid,a.atttypmod,
-	 COALESCE(a.attnum=ANY(i.indkey),false),a.attgenerated::text
-	 FROM pg_attribute a LEFT JOIN pg_index i ON i.indrelid=a.attrelid AND i.indisprimary
-	 WHERE a.attrelid=$1 AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum`, oid)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer rows.Close()
-	var tableColumns []tableColumn
 	keys := 0
-	for rows.Next() {
-		var col Column
-		var generated string
-		if err := rows.Scan(&col.Name, &col.OID, &col.Modifier, &col.Key, &generated); err != nil {
-			return 0, nil, err
-		}
+	for _, col := range t.columns {
 		if col.Key {
 			keys++
 		}
-		tableColumns = append(tableColumns, tableColumn{col, generated})
 	}
-	if err := rows.Err(); err != nil {
+	if keys != 1 {
+		return errors.New("single-column primary key required")
+	}
+	return nil
+}
+func inspectTable(ctx context.Context, conn sourceQuery, c Config, continuous bool) (uint32, []tableColumn, error) {
+	var table tableInspection
+	if err := conn.QueryRow(ctx, "SELECT "+tableInspectionFields+tableInspectionFrom, c.Schema, c.Table).Scan(table.destinations()...); err != nil {
+		if ctx.Err() != nil {
+			return 0, nil, ctx.Err()
+		}
 		return 0, nil, err
 	}
-	rows.Close()
-	if keys != 1 {
-		return 0, nil, errors.New("single-column primary key required")
+	if err := table.validate(continuous); err != nil {
+		return 0, nil, err
 	}
-	return oid, tableColumns, nil
+	return table.oid, table.columns, nil
 }
 
 func preflight(ctx context.Context, conn *pgx.Conn, c Config) (uint32, []Column, error) {
-	oid, tableColumns, err := inspectTable(ctx, conn, c, true)
-	if err != nil {
+	var table tableInspection
+	var publication *struct{ All, Insert, Update, Delete, Truncate bool }
+	var selections []struct {
+		Schema, Table string
+		Columns       []string
+		Filter        *string
+	}
+	// Two entries suffice to reject a multi-table publication without aggregating it.
+	query := "SELECT " + tableInspectionFields + `,
+ (SELECT jsonb_build_object('All',puballtables,'Insert',pubinsert,'Update',pubupdate,
+ 'Delete',pubdelete,'Truncate',pubtruncate) FROM pg_publication WHERE pubname=$3),
+ (SELECT jsonb_agg(jsonb_build_object('Schema',schemaname,'Table',tablename,
+ 'Columns',attnames,'Filter',rowfilter)) FROM
+ (SELECT schemaname,tablename,attnames,rowfilter FROM pg_publication_tables WHERE pubname=$3 LIMIT 2) selected)` + tableInspectionFrom
+	destinations := append(table.destinations(), &publication, &selections)
+	if err := conn.QueryRow(ctx, query, c.Schema, c.Table, c.Publication).Scan(destinations...); err != nil {
+		if ctx.Err() != nil {
+			return 0, nil, ctx.Err()
+		}
 		return 0, nil, err
 	}
-	var all, ins, upd, del, trunc bool
-	if err := conn.QueryRow(ctx, `SELECT puballtables,pubinsert,pubupdate,pubdelete,pubtruncate FROM pg_publication WHERE pubname=$1`, c.Publication).Scan(&all, &ins, &upd, &del, &trunc); err != nil {
+	if err := table.validate(true); err != nil {
 		return 0, nil, err
 	}
-	if all || !ins || !upd || !del || !trunc {
+	if publication == nil {
+		return 0, nil, pgx.ErrNoRows
+	}
+	if publication.All || !publication.Insert || !publication.Update || !publication.Delete || !publication.Truncate {
 		return 0, nil, errors.New("dedicated publication with insert/update/delete/truncate required")
 	}
-	pubs, err := conn.Query(ctx, `SELECT schemaname,tablename,attnames,rowfilter FROM pg_publication_tables WHERE pubname=$1`, c.Publication)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer pubs.Close()
-	count := 0
-	var published []string
-	for pubs.Next() {
-		var schema, table string
-		var names []string
-		var filter *string
-		if err := pubs.Scan(&schema, &table, &names, &filter); err != nil {
-			return 0, nil, err
-		}
-		if schema != c.Schema || table != c.Table || filter != nil || len(names) == 0 {
+	for _, selected := range selections {
+		if selected.Schema != c.Schema || selected.Table != c.Table || selected.Filter != nil || len(selected.Columns) == 0 {
 			return 0, nil, errors.New("publication selection mismatch")
 		}
-		published = names
-		count++
 	}
-	if err := pubs.Err(); err != nil {
-		return 0, nil, err
-	}
-	if count != 1 {
+	if len(selections) != 1 {
 		return 0, nil, errors.New("publication must select exactly one table")
 	}
-	cols, err := selectColumns(tableColumns, published)
-	return oid, cols, err
+	cols, err := selectColumns(table.columns, selections[0].Columns)
+	return table.oid, cols, err
 }
 
 func selectColumns(tableColumns []tableColumn, published []string) ([]Column, error) {
@@ -180,10 +185,10 @@ func decodeValue(oid uint32, value []byte) (json.RawMessage, error) {
 	case 25, 1043, 2950:
 		return json.Marshal(string(value))
 	case 16:
-		if string(value) == "t" {
+		if string(value) == "t" || string(value) == "true" {
 			return json.RawMessage("true"), nil
 		}
-		if string(value) == "f" {
+		if string(value) == "f" || string(value) == "false" {
 			return json.RawMessage("false"), nil
 		}
 	case 20, 21, 23:
@@ -304,7 +309,7 @@ func readSnapshotRows(ctx context.Context, tx pgx.Tx, c Config, cols []Column) (
 	for i, col := range cols {
 		parts[i] = pgx.Identifier{col.Name}.Sanitize() + "::text"
 	}
-	rows, err := tx.Query(ctx, "SELECT "+strings.Join(parts, ",")+" FROM "+pgx.Identifier{c.Schema, c.Table}.Sanitize())
+	rows, err := tx.Query(ctx, "SELECT "+strings.Join(parts, ",")+" FROM ONLY "+pgx.Identifier{c.Schema, c.Table}.Sanitize())
 	if err != nil {
 		return nil, err
 	}
@@ -381,4 +386,14 @@ func validateResume(ctx context.Context, sql *pgx.Conn, repl *pgconn.PgConn, c C
 		}
 	}
 	return nil
+}
+
+// Cancellation can interrupt the socket write as a timeout. Preserve the local
+// cancellation classification instead of reporting a source failure on pause.
+func sendFeedback(ctx context.Context, repl *pgconn.PgConn, position pglogrepl.LSN) error {
+	err := pglogrepl.SendStandbyStatusUpdate(ctx, repl, pglogrepl.StandbyStatusUpdate{WALWritePosition: position, WALFlushPosition: position, WALApplyPosition: position})
+	if err != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
 }

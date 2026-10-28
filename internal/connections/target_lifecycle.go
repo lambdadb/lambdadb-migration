@@ -22,6 +22,13 @@ func (t *APITarget) collectionPath() string {
 	return "/projects/" + url.PathEscape(t.binding.Target.Project) + "/collections/" + url.PathEscape(t.binding.Target.Collection)
 }
 func (t *APITarget) request(ctx context.Context, method, path string, body []byte) ([]byte, int, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, 0, unsentError{err}
+	}
+	// Drain admitted mutations on pause/shutdown, bounded by the client's timeout.
+	if method == "POST" {
+		ctx = context.WithoutCancel(ctx)
+	}
 	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(t.binding.Target.URL, "/")+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, errors.New("invalid target request")
@@ -38,6 +45,9 @@ func (t *APITarget) request(ctx context.Context, method, path string, body []byt
 		return nil, 0, errors.New("target outcome uncertain")
 	}
 	defer res.Body.Close()
+	if res.StatusCode == http.StatusTooManyRequests {
+		return nil, res.StatusCode, rateLimited(res.Header.Get("Retry-After"))
+	}
 	raw, err := io.ReadAll(io.LimitReader(res.Body, (64<<10)+1))
 	if err != nil || len(raw) > 64<<10 {
 		return nil, res.StatusCode, errors.New("invalid target response")
