@@ -361,3 +361,51 @@ reinitialized. This normal cross-AZ stop/restart test does not promote EFS to
 production, validate replication during an NFS partition, certify a customer
 provider or establish backup/restore, throughput or recovery-time guarantees.
 The uncertain-write policy and earlier storage failure evidence still apply.
+
+## Actual-worker fault qualification, October 28, 2026
+
+The backend's opt-in `worker-validation/faults.py` passed a separate full Seoul
+run against real PostgreSQL and LambdaDB. This repository adds only a test-only
+supervisor in `internal/connections/fault_supervisor_test.go`, a separate
+`Dockerfile.connection-fault-probe` QA image and its CI build/smoke. The image runs
+the ordinary worker binary as a child and can SIGKILL it only on a private verified
+TLS response bound to its exact ECS task ARN. It adds no fault hook to the product
+worker, ECS Exec, Linux capabilities or shared PID namespace. Inspector tasks run
+the actual read-only CLI directly.
+
+The same worker recovered a scoped PostgreSQL network rejection, preserving its
+checkpoint/feedback while blocked and catching up from six to eleven accepted
+operations. A quiescent actual SIGKILL retained accepted sequence 11 with no
+pending intent. After its task was confirmed STOPPED, source changes committed
+while it was absent; a replacement in another AZ resumed the same collection.
+Further changes reached accepted sequence 15 without rewriting the baseline.
+
+A private test relay then forwarded operation 16 to real LambdaDB, received its
+actual 202 and withheld every response byte. The supervisor SIGKILLed the waiting
+worker; the client closed 0.478431 seconds after receipt. The journal retained
+accepted sequence 15 and sending sequence 16, with the relay's exact request
+digest and the prior source checkpoint. A third actual worker remained
+`action_required/target_outcome_uncertain` across pause, resume, resync and
+disconnect. Later source changes stayed unapplied; only 16 mutations and one
+collection creation reached the target. Slot feedback stayed behind the uncertain
+change, and the owned slot remained present. Final read-only inspection retained
+the exact intent/checkpoint and resync revision 0. All six tasks stopped; the
+three actual workers exited 137, 137 and 0. Test collection deletion was verified
+as 404. Final infrastructure cleanup passed all 33 owned resource checks, with
+zero remaining AWS stack resources. Fixture teardown removes the isolated
+source/slot; it is not a completed
+product disconnection or an uncertainty-recovery API.
+
+Earlier reconnect-wait and stale-observation harness failures were preserved with
+read-only state archives. Their fixes change only the backend validator. No
+existing connection was reset or initialized again; retries used fresh resources.
+Local full PostgreSQL race tests, `go vet ./...`, `go build ./...`, the amd64 QA
+image build and executed container supervisor tests passed. The backend reports
+22 fault/worker, 20 infrastructure and 8 coordinator tests plus lint passing.
+
+This validates the bounded source outage, quiescent crash and lost-success-response
+cases. It does not promote EFS, validate NFS partitions or interrupted commits,
+provide automatic uncertain-write recovery, qualify backup/restore or load, or
+provision production operation. Target readback remains a validator assertion,
+not a production per-batch requirement. Engine and production worker Go behavior
+are unchanged; ordinary supported LambdaDB APIs are used throughout.
