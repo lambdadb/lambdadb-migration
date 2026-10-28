@@ -126,6 +126,14 @@ func TestConnectionFaultSupervisor(t *testing.T) {
 	if json.Unmarshal([]byte(os.Getenv("CONNECTION_TEST_WORKER_ARGS")), &args) != nil || len(args) == 0 {
 		t.Fatal("explicit worker arguments required")
 	}
+	workerPID := 0
+	emit := func(event string, value int) {
+		if event == "supervisor_worker_started" {
+			workerPID = value
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"event": event, "value": value, "task_arn": identity.TaskARN, "at": time.Now().UTC().Format(time.RFC3339Nano)})
+	}
+	storage := &nfsFaultProbe{enabled: os.Getenv("CONNECTION_TEST_NFS_FAULTS") == "1", emit: emit}
 	poll := func() (bool, error) {
 		raw, _ := json.Marshal(map[string]string{"task_arn": identity.TaskARN})
 		req, _ := http.NewRequest("POST", origin+"/test/kill", bytes.NewReader(raw))
@@ -138,9 +146,13 @@ func TestConnectionFaultSupervisor(t *testing.T) {
 		var command struct {
 			TaskARN string `json:"task_arn"`
 			Kill    bool   `json:"kill"`
+			NFS     string `json:"nfs"`
 		}
 		if res.StatusCode != 200 || json.NewDecoder(io.LimitReader(res.Body, 4096)).Decode(&command) != nil || command.TaskARN != identity.TaskARN {
 			return false, errors.New("invalid test kill response")
+		}
+		if err := storage.update(command.NFS, workerPID); err != nil {
+			return false, err
 		}
 		return command.Kill, nil
 	}
@@ -149,9 +161,7 @@ func TestConnectionFaultSupervisor(t *testing.T) {
 	termination := make(chan os.Signal, 2)
 	signal.Notify(termination, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(termination)
-	code, err := superviseFaultWorker(cmd, termination, poll, func(event string, value int) {
-		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"event": event, "value": value, "task_arn": identity.TaskARN, "at": time.Now().UTC().Format(time.RFC3339Nano)})
-	}, time.Second)
+	code, err := superviseFaultWorker(cmd, termination, poll, emit, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}

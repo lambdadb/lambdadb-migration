@@ -56,4 +56,4 @@ jobs:
       - run: docker run --rm connection-volume-probe:ci '-test.run=^TestStateVolumeProbeLocal$'
       - run: docker run --rm connection-volume-probe:ci '-test.run=^TestPartitionFault'
       - run: docker build --platform linux/amd64 -f Dockerfile.connection-fault-probe -t connection-fault-probe:ci .
-      - run: docker run --rm connection-fault-probe:ci '-test.run=^TestFaultSupervisor' '-test.timeout=1m'
+      - run: docker run --rm connection-fault-probe:ci '-test.run=^Test(FaultSupervisor|StorageFault)' '-test.timeout=1m'
