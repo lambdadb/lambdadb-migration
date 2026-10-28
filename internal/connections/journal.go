@@ -11,6 +11,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/lambdadb/lambdadb-migration/internal/statefile"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -40,7 +41,7 @@ type State struct {
 	Data json.RawMessage `json:"data"`
 }
 type Journal struct {
-	db          *bolt.DB
+	db          *statefile.DB
 	fingerprint string
 }
 
@@ -73,7 +74,7 @@ func OpenJournal(path, fingerprint string, initialize bool) (*Journal, error) {
 	if err != nil {
 		return nil, errors.New("regional connection state missing or exclusively owned")
 	}
-	j := &Journal{db: db, fingerprint: fingerprint}
+	j := &Journal{db: statefile.Guard(db), fingerprint: fingerprint}
 	if initialize {
 		err = j.db.Update(func(tx *bolt.Tx) error {
 			b, e := tx.CreateBucket([]byte("connection"))

@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/lambdadb/lambdadb-migration/internal/statefile"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -37,7 +38,7 @@ type State struct {
 // A bbolt write transaction atomically fsyncs the complete row image and offset.
 // Its exclusive file lock is our single-host execution ownership mechanism.
 // Never copy an active database or put it on a network filesystem.
-type Store struct{ db *bolt.DB }
+type Store struct{ db *statefile.DB }
 
 type bootstrap struct {
 	Fingerprint string
@@ -112,9 +113,10 @@ func openStore(path string, create bool) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open regional state (exclusive ownership required): %w", err)
 	}
-	return &Store{db: db}, nil
+	return &Store{db: statefile.Guard(db)}, nil
 }
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) StorageError() error { return s.db.Err() }
+func (s *Store) Close() error        { return s.db.Close() }
 func (s *Store) Load() (*State, error) {
 	var state *State
 	err := s.db.View(func(tx *bolt.Tx) error {

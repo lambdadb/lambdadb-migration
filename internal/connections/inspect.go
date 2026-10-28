@@ -9,6 +9,7 @@ import (
 
 	"github.com/lambdadb/lambdadb-migration/internal/connections/protocol"
 	"github.com/lambdadb/lambdadb-migration/internal/postgrescdc"
+	"github.com/lambdadb/lambdadb-migration/internal/statefile"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -67,7 +68,7 @@ func InspectState(directory string) (*Inspection, error) {
 	}); err != nil {
 		return nil, err
 	}
-	j := &Journal{db: db, fingerprint: fingerprint}
+	j := &Journal{db: statefile.Guard(db), fingerprint: fingerprint}
 	state, err := j.Load()
 	if err != nil {
 		return nil, err

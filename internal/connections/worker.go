@@ -74,7 +74,16 @@ func (w *Worker) update(fn func(*workerData) error) error {
 func (w *Worker) phase(phase, reason string) error {
 	return w.update(func(d *workerData) error { d.Phase = phase; d.Reason = reason; return nil })
 }
+func (w *Worker) storageError() error {
+	if err := w.journal.db.Err(); err != nil {
+		return err
+	}
+	return w.source.StorageError()
+}
 func (w *Worker) authority() error {
+	if err := w.storageError(); err != nil {
+		return err
+	}
 	d, err := w.data()
 	if err != nil {
 		return err
@@ -85,6 +94,9 @@ func (w *Worker) authority() error {
 	return nil
 }
 func (w *Worker) report(ctx context.Context) error {
+	if err := w.storageError(); err != nil {
+		return err
+	}
 	var observation protocol.Observation
 	if err := w.update(func(d *workerData) error {
 		if d.Sequence >= 1<<63-1 {
@@ -236,15 +248,23 @@ func (w *Worker) Run(ctx context.Context) error {
 				if !errors.Is(blocked, ErrTargetOutcomeUncertain) && !errors.Is(blocked, ErrTargetRejected) {
 					return blocked
 				}
-				_ = w.phase("action_required", reasonCode(blocked))
+				if err := w.phase("action_required", reasonCode(blocked)); err != nil {
+					return err
+				}
 			case desiredKey == "expired":
-				_ = w.phase("expired", "authority_expired")
+				if err := w.phase("expired", "authority_expired"); err != nil {
+					return err
+				}
 			case d.Phase == "disconnected" && command.DesiredState == "disconnected":
 				// The terminal receipt survives authority expiry and secret retirement.
 			case command.DesiredState == "paused":
-				_ = w.phase("paused", "")
+				if err := w.phase("paused", ""); err != nil {
+					return err
+				}
 			case d.Ready && d.ReadyRevision == command.ResyncRevision && d.Approved.Binding.Mode == "snapshot" && command.DesiredState == "running":
-				_ = w.phase("completed", "")
+				if err := w.phase("completed", ""); err != nil {
+					return err
+				}
 			case finished != desiredKey && time.Now().After(nextAttempt):
 				jobctx, jobcancel := context.WithCancel(ctx)
 				cancel = jobcancel
@@ -253,7 +273,13 @@ func (w *Worker) Run(ctx context.Context) error {
 				go func(a protocol.Approved) { done <- w.execute(jobctx, a) }(d.Approved)
 			}
 		}
-		_ = w.report(ctx)
+		if err := w.report(ctx); err != nil {
+			// Regional HTTP failures do not interrupt capture under cached authority.
+			// Storage failures must never retry or report through the failed handle.
+			if fatal := w.storageError(); fatal != nil {
+				return fatal
+			}
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -261,10 +287,15 @@ func (w *Worker) Run(ctx context.Context) error {
 			cancel()
 			cancel = nil
 			done = nil
+			if fatal := w.storageError(); fatal != nil {
+				return fatal
+			}
 			if result == nil {
 				finished = key
 			} else {
-				_ = w.phase("action_required", reasonCode(result))
+				if err := w.phase("action_required", reasonCode(result)); err != nil {
+					return err
+				}
 				nextAttempt = time.Now().Add(5 * time.Second)
 			}
 			key = ""
@@ -344,7 +375,9 @@ func (w *Worker) execute(ctx context.Context, a protocol.Approved) error {
 		return err
 	}
 	if a.Control.DesiredState == "disconnected" {
-		_ = w.phase("disconnecting", "")
+		if err := w.phase("disconnecting", ""); err != nil {
+			return err
+		}
 		if a.Binding.Mode == "continuous" {
 			sourceSecret, e := w.Secrets.Resolve(ctx, a.Binding.Region, a.Binding.Source.CredentialRef)
 			if e != nil {
@@ -360,7 +393,9 @@ func (w *Worker) execute(ctx context.Context, a protocol.Approved) error {
 		}
 		return w.phase("disconnected", "")
 	}
-	_ = w.phase("validating", "")
+	if err := w.phase("validating", ""); err != nil {
+		return err
+	}
 	if err = w.ensureTarget(ctx, target); err != nil {
 		return err
 	}
@@ -392,7 +427,9 @@ func (w *Worker) execute(ctx context.Context, a protocol.Approved) error {
 	if _, err = capture.Resume(ctx, dsn); err != nil {
 		return errors.New("source_setup_required")
 	}
-	_ = w.phase("running", "")
+	if err := w.phase("running", ""); err != nil {
+		return err
+	}
 	return capture.Stream(ctx, dsn, func(ctx context.Context, old, next *postgrescdc.State) error {
 		return w.applyChanges(ctx, guarded, old.Rows, next.Rows)
 	}, nil)

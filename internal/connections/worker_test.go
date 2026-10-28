@@ -20,6 +20,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/lambdadb/lambdadb-migration/internal/connections/protocol"
+	"github.com/lambdadb/lambdadb-migration/internal/statefile"
 )
 
 // workerFixture is an HTTP contract fixture. Engine/WAL integration is a separate
@@ -39,6 +40,7 @@ type workerFixture struct {
 	controlUnavailable bool
 	loseCreate         bool
 	loseNext           bool
+	afterMutation      func()
 }
 type fixtureSecrets struct{ f *workerFixture }
 
@@ -183,6 +185,9 @@ func (f *workerFixture) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.mutations++
+	if f.afterMutation != nil {
+		f.afterMutation()
+	}
 	if f.loseNext {
 		f.loseNext = false
 		w.WriteHeader(503)
@@ -191,7 +196,7 @@ func (f *workerFixture) handle(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(202)
 	_ = json.NewEncoder(w).Encode(map[string]string{"message": "request accepted"})
 }
-func (f *workerFixture) worker(t *testing.T, initialize bool) (context.CancelFunc, <-chan error) {
+func (f *workerFixture) worker(t *testing.T, initialize bool, configure ...func(*Worker)) (context.CancelFunc, <-chan error) {
 	t.Helper()
 	c, err := NewControl(f.server.URL, f.approved.Binding.ConnectionID, strings.Repeat("w", 32))
 	if err != nil {
@@ -199,6 +204,9 @@ func (f *workerFixture) worker(t *testing.T, initialize bool) (context.CancelFun
 	}
 	c.Client = f.server.Client()
 	worker := &Worker{Control: c, Secrets: fixtureSecrets{f}, StateDirectory: f.dir, Initialize: initialize, AllowInsecureSource: true, Transport: f.server.Client().Transport, PollInterval: 20 * time.Millisecond}
+	for _, fn := range configure {
+		fn(worker)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- worker.Run(ctx); close(done) }()
@@ -482,5 +490,50 @@ func TestReportedUncertaintyRemainsBlockedEvenWithDurableAcceptanceProof(t *test
 	defer f.mu.Unlock()
 	if f.mutations != 2 || f.observation.Observation.ReasonCode != "target_outcome_uncertain" {
 		t.Fatal("reported uncertainty silently cleared")
+	}
+}
+
+// Closing the actual retained handle during a successful HTTP response exercises
+// the runner's fatal path even when target code maps the save error to uncertainty.
+func TestWorkerStopsAfterRetainedHandleFailure(t *testing.T) {
+	for _, file := range []string{"journal", "source"} {
+		t.Run(file, func(t *testing.T) {
+			f := newWorkerFixture(t, "continuous")
+			_, done := f.worker(t, true, func(w *Worker) {
+				f.afterMutation = func() {
+					f.afterMutation = nil
+					if file == "journal" {
+						_ = w.journal.Close()
+					} else {
+						_ = w.source.Close()
+					}
+				}
+			})
+			select {
+			case err := <-done:
+				if !errors.Is(err, statefile.ErrUnavailable) {
+					t.Fatalf("worker did not terminate on storage failure: %v", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("worker retried a failed retained handle")
+			}
+			f.mu.Lock()
+			if f.mutations != 1 {
+				t.Errorf("sent %d mutations after storage failure", f.mutations)
+			}
+			f.mu.Unlock()
+			j, err := OpenJournal(filepath.Join(f.dir, "connection.db"), protocol.Fingerprint(f.approved.Binding), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer j.Close()
+			state, err := j.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if file == "journal" && (state.AcceptedSequence != 0 || state.Pending == nil || state.Pending.Status != "sending") {
+				t.Fatal("failed acceptance save lost pending transmission evidence")
+			}
+		})
 	}
 }

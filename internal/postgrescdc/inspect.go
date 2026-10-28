@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pglogrepl"
+	"github.com/lambdadb/lambdadb-migration/internal/statefile"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -16,7 +17,7 @@ func OpenReadOnlyStore(path string) (*Store, error) {
 	if err != nil {
 		return nil, errors.New("source inspection requires an existing valid file and a stopped worker")
 	}
-	return &Store{db: db}, nil
+	return &Store{db: statefile.Guard(db)}, nil
 }
 
 type SourceInspection struct {

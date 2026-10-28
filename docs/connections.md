@@ -299,3 +299,28 @@ to change the engine. Normal storage remains unchanged. Live-owner takeover is
 unqualified; actual worker replacement awaits an explicit handover/I/O-error
 policy, including confirmation of the old task's STOPPED state for a singleton
 approach. All owned cloud resources were cleaned up after evidence preservation.
+
+## Storage errors and execution handover, October 28, 2026
+
+The source store and connection journal now serialize transactions through a
+shared fail-stop handle guard. A begin/commit failure marks that handle unusable;
+subsequent reads and writes return a redacted storage error without entering
+bbolt again. Callback rejections such as expired authority or an existing pending
+intent retain their previous behavior. This adds no on-disk fields or limits.
+The worker returns on storage failure even when target handling has translated
+an acceptance-save error into target uncertainty. Failed phase writes are no
+longer ignored. Regional HTTP failures still permit capture under cached authority.
+
+This contains returned storage failures, not failures inside the first mmap access
+or blocked NFS calls. SIGBUS remains process-fatal. A blocked or failed task must
+be terminated and confirmed STOPPED before another task accesses the retained
+files; a newly available file lock is not proof that the previous task stopped.
+The backend's regional execution controller must enforce this ordering. Do not
+use an expiring ownership lease, rolling overlap or a restarting service with
+`-initialize`. Actual EFS worker deployment remains unqualified.
+
+Focused coverage includes a commit whose bytes survive but which reports EIO,
+waiting readers/writers refused after failure, ordinary callback rejections, and
+an actual worker receiving a successful target response while its source/journal
+handle becomes unavailable. These are deterministic local tests, not a repeat of
+the earlier cloud network-partition experiment.

@@ -73,7 +73,9 @@ func (w *Worker) prepareAndApply(ctx context.Context, a protocol.Approved, selec
 	if d.Ready && d.ReadyRevision == a.Control.ResyncRevision {
 		return nil
 	}
-	_ = w.phase("snapshotting", "")
+	if err := w.phase("snapshotting", ""); err != nil {
+		return err
+	}
 	receipt, err := w.source.CurrentCut(w.fingerprint)
 	if err != nil {
 		return errors.New("state_invalid")
@@ -164,7 +166,9 @@ func (w *Worker) prepareAndApply(ctx context.Context, a protocol.Approved, selec
 		}
 		rows = cut.Snapshot.Rows
 	}
-	_ = w.phase("applying", "")
+	if err := w.phase("applying", ""); err != nil {
+		return err
+	}
 	if err = w.reconcile(ctx, target, revision, rows); err != nil {
 		return err
 	}
