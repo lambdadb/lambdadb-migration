@@ -324,3 +324,11 @@ waiting readers/writers refused after failure, ordinary callback rejections, and
 an actual worker receiving a successful target response while its source/journal
 handle becomes unavailable. These are deterministic local tests, not a repeat of
 the earlier cloud network-partition experiment.
+
+The backend controller's separate Seoul experiment subsequently confirmed actual
+STOPPED before a replacement journal verifier was created, including a blocked
+NFS write. Task termination in that fault case took about 178 seconds and recorded
+a container runtime stop timeout. This is synthetic storage/controller evidence;
+the actual replication worker was not run in Fargate in that experiment. It does
+not promote EFS or promise a recovery time. The backend guide records the exact
+boundary and conditional-claim race result.
