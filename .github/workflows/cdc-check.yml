@@ -9,6 +9,7 @@ on:
       - "internal/statefile/**"
       - "Dockerfile.connection-worker"
       - "Dockerfile.connection-fault-probe"
+      - "Dockerfile.connection-crash-probe"
       - "Dockerfile.connection-volume-probe"
       - "scripts/cdc-test-*"
       - "Dockerfile.cdc-worker"
@@ -26,6 +27,7 @@ on:
       - "internal/statefile/**"
       - "Dockerfile.connection-worker"
       - "Dockerfile.connection-fault-probe"
+      - "Dockerfile.connection-crash-probe"
       - "Dockerfile.connection-volume-probe"
       - "scripts/cdc-test-*"
       - "Dockerfile.cdc-worker"
@@ -57,3 +59,5 @@ jobs:
       - run: docker run --rm connection-volume-probe:ci '-test.run=^TestPartitionFault'
       - run: docker build --platform linux/amd64 -f Dockerfile.connection-fault-probe -t connection-fault-probe:ci .
       - run: docker run --rm connection-fault-probe:ci '-test.run=^Test(FaultSupervisor|StorageFault)' '-test.timeout=1m'
+      - run: docker build -f Dockerfile.connection-crash-probe -t connection-crash-probe:ci .
+      - run: docker run --rm --cap-add=SYS_PTRACE --env CONNECTION_TEST_COMMIT_CRASH=1 connection-crash-probe:ci '-test.run=^Test(CommitCrashAtDataAndMetadataSync|Journal|Inspection)' '-test.v' '-test.timeout=2m'

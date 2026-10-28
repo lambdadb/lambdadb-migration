@@ -77,3 +77,33 @@ Source WAL exhaustion or continuity loss is a separate incident; do not silently
 advance feedback, drop a customer publication/slot, release deletion guards or
 retire credentials to make the connection appear complete. Forced cleanup and
 resuming from older backups require a separate operator decision and protocol.
+
+## Bounded local commit interruption qualification
+
+A Linux-only QA image exercises actual process death at the first and second
+`fdatasync` calls in a journal transaction. A test subprocess locks its OS thread
+so strace's per-thread injection counter identifies the selected data/meta sync.
+The test requires recorded SIGSTOP, the exact syscall count and actual SIGKILL,
+then reopens the existing journal and runs bbolt's page-integrity check. Acceptance
+and 1 MiB checkpoint-growth transactions are separate cases. Expected results are
+whole old/new states: pending sending evidence and inventory cannot be partially
+cleared, and checkpoint bytes cannot be mixed. The growth case verifies the file
+actually grew from 32 KiB to 2 MiB rather than testing only small cached updates.
+
+```sh
+docker build -f Dockerfile.connection-crash-probe -t connection-crash-probe:local .
+docker run --rm --cap-add=SYS_PTRACE --env CONNECTION_TEST_COMMIT_CRASH=1 \
+  connection-crash-probe:local \
+  '-test.run=^Test(CommitCrashAtDataAndMetadataSync|Journal|Inspection)' \
+  '-test.v' '-test.timeout=2m'
+```
+
+Only this local/CI container receives SYS_PTRACE. It is never a deployed worker
+image, and the ordinary journal/bbolt dependency has no new injection hook. The
+four syscall cases passed on native Linux arm64. Normal journal/inspection tests
+run alongside them to check subprocess lifecycle interactions. This is process
+crash evidence, not host power-loss, EFS durability or old-backup freshness proof.
+The operating system remains alive with its page cache. In particular, surviving
+metadata bytes alone do not establish a completed fsync under physical failure.
+
+Reference: [strace syscall injection](https://man7.org/linux/man-pages/man1/strace.1.html).
