@@ -130,6 +130,11 @@ func (w *Worker) Run(ctx context.Context) error {
 	if w.Control == nil || w.Secrets == nil || w.StateDirectory == "" {
 		return errors.New("invalid worker configuration")
 	}
+	if _, err := os.Lstat(filepath.Join(w.StateDirectory, restoredStateMarker)); err == nil {
+		return errors.New("restored archive is inspection-only; worker resume is forbidden")
+	} else if !os.IsNotExist(err) {
+		return errors.New("regional state directory unavailable")
+	}
 	approved, err := w.Control.Desired(ctx)
 	if err != nil {
 		return err

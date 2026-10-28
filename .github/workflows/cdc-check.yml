@@ -5,6 +5,7 @@ on:
       - "internal/postgrescdc/**"
       - "cmd/cdc-worker/**"
       - "cmd/connection-worker/**"
+      - "cmd/connection-state/**"
       - "internal/connections/**"
       - "internal/statefile/**"
       - "Dockerfile.connection-worker"
@@ -23,6 +24,7 @@ on:
       - "internal/postgrescdc/**"
       - "cmd/cdc-worker/**"
       - "cmd/connection-worker/**"
+      - "cmd/connection-state/**"
       - "internal/connections/**"
       - "internal/statefile/**"
       - "Dockerfile.connection-worker"
@@ -60,4 +62,4 @@ jobs:
       - run: docker build --platform linux/amd64 -f Dockerfile.connection-fault-probe -t connection-fault-probe:ci .
       - run: docker run --rm connection-fault-probe:ci '-test.run=^Test(FaultSupervisor|StorageFault)' '-test.timeout=1m'
       - run: docker build -f Dockerfile.connection-crash-probe -t connection-crash-probe:ci .
-      - run: docker run --rm --cap-add=SYS_PTRACE --env CONNECTION_TEST_COMMIT_CRASH=1 connection-crash-probe:ci '-test.run=^Test(CommitCrashAtDataAndMetadataSync|Journal|Inspection)' '-test.v' '-test.timeout=2m'
+      - run: docker run --rm --cap-add=SYS_PTRACE --env CONNECTION_TEST_COMMIT_CRASH=1 connection-crash-probe:ci '-test.run=^Test(CommitCrashAtDataAndMetadataSync|Journal|Inspection|StateArchive)' '-test.v' '-test.timeout=2m'

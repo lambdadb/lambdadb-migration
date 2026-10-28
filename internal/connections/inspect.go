@@ -42,6 +42,11 @@ type Inspection struct {
 // InspectState requires a stopped worker and holds both files read-only together.
 // It neither authorizes recovery nor reveals row content, IDs or secret references.
 func InspectState(directory string) (*Inspection, error) {
+	return inspectState(directory, nil)
+}
+
+// use runs while both original read-only locks are held.
+func inspectState(directory string, use func(*Inspection) error) (*Inspection, error) {
 	if directory == "" {
 		return nil, errors.New("state directory required")
 	}
@@ -105,6 +110,11 @@ func InspectState(directory string) (*Inspection, error) {
 		p := state.Pending
 		out.Pending = &PendingInspection{Status: p.Status, Sequence: p.Sequence, Operation: p.Operation, Digest: p.Digest}
 		out.RecoveryRequired = out.RecoveryRequired || p.Status == "sending" || p.Status == "rejected"
+	}
+	if use != nil {
+		if err := use(out); err != nil {
+			return nil, err
+		}
 	}
 	return out, nil
 }

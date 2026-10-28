@@ -107,3 +107,45 @@ The operating system remains alive with its page cache. In particular, surviving
 metadata bytes alone do not establish a completed fsync under physical failure.
 
 Reference: [strace syscall injection](https://man7.org/linux/man-pages/man1/strace.1.html).
+
+## Paired backup and inspection-only restore
+
+After the regional controller confirms the original task STOPPED, use the separate
+`connection-state` operator executable. It needs no source/target secret, control
+URL, AWS credential or network access. It never authorizes a resumed worker.
+
+```sh
+go build -o /private/bin/connection-state ./cmd/connection-state
+/private/bin/connection-state -state-dir /retained/stopped-connection \
+  -backup /private/backups/new-state.tar.gz
+/private/bin/connection-state -restore /private/backups/new-state.tar.gz \
+  -state-dir /private/incidents/new-inspection-directory
+connection-worker -inspect-state -state-dir /private/incidents/new-inspection-directory
+```
+
+Backup validates the pair and keeps both original read-only locks through copying.
+A same-directory temporary file is synced before exclusive publication; an
+existing destination is never overwritten. The private 0600 gzip/tar contains
+only connection.db, source.db and a format-one JSON manifest with lengths, SHA-256
+checksums and redacted inspection metadata. The databases themselves contain row
+data and credential references: keep the archive private and do not upload it to
+review tools or tickets. Archive members are bounded to 512 MiB per state file;
+this is an archive safety limit, not an increased worker state budget.
+
+Restore requires a new 0700 directory, refuses links/traversal/duplicate or unknown
+members, verifies exact lengths/hashes, gzip CRC and the pair's actual inspection
+against the manifest, and syncs the output files. Failed copies stay quarantined
+for diagnosis. The durable `.restore-inspection-only` marker is created before
+extracting either database. The worker refuses both ordinary restart and
+initialization from any directory carrying this marker, before contacting control
+or resolving secrets. No marker-clear/activate/automatic restore API is supplied.
+
+An intact clean backup can still be older than writes accepted by LambdaDB, or
+omit a sending intent saved after that backup. Hashes and a matching local source
+LSN do not establish freshness against the remote acceptance history. The marker
+therefore applies to every restore, including a clean old pair. Inspection,
+archiving and restored inspection never clear uncertainty, advance source
+feedback, drop a slot or release management deletion guards. Retain normal
+same-volume restarts for existing state; old-backup activation needs a separately
+reviewed recovery contract. File locks do not fence an old NFS owner, so the
+external confirmed-STOPPED precondition remains required before backup.
