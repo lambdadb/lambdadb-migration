@@ -539,11 +539,13 @@ goreleaser release --snapshot --clean
 1. Branch feature and fix work from `develop`, open the pull request against
    `develop` (GitHub defaults to `main`, so select the base explicitly), and
    merge it with **Squash and merge**.
-2. Prepare a release (for example, Go SDK or documentation updates) on
-   `develop` the same way.
-3. Promote with a `develop` -> `main` pull request merged with
-   **Create a merge commit**.
-4. Tag the resulting `main` commit and push the tag:
+2. Cut `release/X.Y.Z` from `develop` when preparing a release. Stabilization
+   changes (for example, Go SDK or documentation updates) go into the release
+   branch through pull requests while `develop` continues. For a release with
+   nothing to stabilize, promote `develop` directly.
+3. Promote with a `release/X.Y.Z` -> `main` (or `develop` -> `main`) pull
+   request merged with **Create a merge commit**, then tag that `main` merge
+   commit and push the tag:
 
    ```bash
    git tag v0.1.3 <main-merge-commit>
@@ -552,16 +554,17 @@ goreleaser release --snapshot --clean
 
    Tag pushes matching `v*` run the release workflow and publish GoReleaser
    artifacts to GitHub Releases. Never move a published tag.
-5. After every release, and whenever `main` has other commits absent from
-   `develop` (a hotfix or a Dependabot security update merged into `main`),
-   open a `main` -> `develop` pull request and merge it with
-   **Create a merge commit**. The promotion merge commit itself is absent from
-   `develop`, so without this sync the release tag is unreachable from
-   `develop`. Never squash or rebase this
-   synchronization; that drops the shared ancestry, so later comparisons repeat
-   synchronized commits and release tags become unreachable from `develop`.
-   Afterwards, `git merge-base --is-ancestor <main-commit> origin/develop` must
-   succeed.
+4. After every release, back-merge `main` into `develop` with a `main` ->
+   `develop` pull request merged with **Create a merge commit**. Back-merge
+   `main`, not the release branch: only `main` carries the promotion merge
+   commit and its tag, plus any hotfix or Dependabot security update merged
+   into `main`. Never squash or rebase the back-merge; that drops the shared
+   ancestry, so later comparisons repeat merged commits and release tags become
+   unreachable from `develop`. Afterwards,
+   `git merge-base --is-ancestor origin/main origin/develop` must succeed.
+5. For a hotfix, cut `hotfix/X.Y.Z` from `main`, merge it into `main` with a
+   merge commit, tag, and back-merge `main` into `develop` as above.
+6. Delete `release/*` and `hotfix/*` branches after they merge.
 
 Once lambdadb/lambdadb-iac#22 is applied, organization rulesets enforce this:
 `develop` and `main` cannot be deleted or force-pushed and accept changes only
