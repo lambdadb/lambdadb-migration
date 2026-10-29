@@ -238,6 +238,9 @@ func (s *Store) save(state *State, run *Generation) error {
 				return err
 			}
 		}
+		if err := completeTransaction(tx, b); err != nil {
+			return err
+		}
 		bucket, err := tx.CreateBucketIfNotExists([]byte("cdc"))
 		if err != nil {
 			return err

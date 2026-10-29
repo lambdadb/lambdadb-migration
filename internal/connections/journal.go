@@ -17,13 +17,15 @@ import (
 
 const MaxStateBytes = 32 << 20
 const MaxManagedRows = 10000
-const journalFormat = 3
+const journalFormat = 4
 
 var ErrPending = errors.New("a durable target intent is pending")
 var ErrTargetOutcomeUncertain = errors.New("target_outcome_uncertain")
 var ErrTargetRejected = errors.New("target_rejected")
 
 type Intent struct {
+	PlanID    string          `json:"plan_id,omitempty"`
+	PlanIndex uint64          `json:"plan_index,omitempty"`
 	RetryAt   time.Time       `json:"retry_at,omitempty"`
 	Status    string          `json:"status"`
 	Sequence  uint64          `json:"sequence"`
@@ -32,11 +34,12 @@ type Intent struct {
 	Digest    string          `json:"digest"`
 }
 type State struct {
-	Format           int             `json:"format"`
-	Fingerprint      string          `json:"fingerprint"`
-	AcceptedSequence uint64          `json:"accepted_sequence"`
-	Pending          *Intent         `json:"pending,omitempty"`
-	ManagedIDs       map[string]bool `json:"managed_ids"`
+	Plan             *ApplicationPlan `json:"application_plan,omitempty"`
+	Format           int              `json:"format"`
+	Fingerprint      string           `json:"fingerprint"`
+	AcceptedSequence uint64           `json:"accepted_sequence"`
+	Pending          *Intent          `json:"pending,omitempty"`
+	ManagedIDs       map[string]bool  `json:"managed_ids"`
 	// Source and lifecycle state is opaque to this common journal. Credentials must
 	// never be stored here; approved configuration contains regional references only.
 	Data json.RawMessage `json:"data"`
@@ -109,9 +112,13 @@ func (j *Journal) decode(tx *bolt.Tx) (*State, error) {
 		return nil, errors.New("invalid regional state size")
 	}
 	var s State
-	if json.Unmarshal(raw, &s) != nil || s.Format != journalFormat || s.ManagedIDs == nil || len(s.ManagedIDs) > MaxManagedRows || s.Fingerprint != j.fingerprint || s.AcceptedSequence > math.MaxInt64 || !json.Valid(s.Data) {
+	if json.Unmarshal(raw, &s) != nil || (s.Format != journalFormat && s.Format != 3) || s.ManagedIDs == nil || len(s.ManagedIDs) > MaxManagedRows || s.Fingerprint != j.fingerprint || s.AcceptedSequence > math.MaxInt64 || !json.Valid(s.Data) {
 		return nil, errors.New("regional state invalid or configuration changed")
 	}
+	if err := validatePlan(s); err != nil {
+		return nil, err
+	}
+	s.Format = journalFormat
 	for id, present := range s.ManagedIDs {
 		if id == "" || !present {
 			return nil, errors.New("invalid managed document inventory")
@@ -197,6 +204,10 @@ func (j *Journal) SaveData(data json.RawMessage) error {
 // Prepare durably assigns a local journal sequence to the complete immutable operation before
 // any network send. Caller content is compacted, never passed through float64.
 func (j *Journal) Prepare(operation string, content json.RawMessage) (*Intent, error) {
+	return j.prepare(operation, content, "", 0)
+}
+
+func (j *Journal) prepare(operation string, content json.RawMessage, planID string, index uint64) (*Intent, error) {
 	canonical, err := json.Marshal(content)
 	if err != nil {
 		return nil, errors.New("invalid target content")
@@ -210,10 +221,17 @@ func (j *Journal) Prepare(operation string, content json.RawMessage) (*Intent, e
 		if s.Pending != nil {
 			return ErrPending
 		}
+		if planID != "" {
+			if s.Plan == nil || s.Plan.ID != planID || s.Plan.Cursor != index || index >= s.Plan.Total {
+				return errors.New("target operation does not match application plan")
+			}
+		} else if s.Plan != nil && s.Plan.Cursor != s.Plan.Total {
+			return errors.New("application plan is incomplete")
+		}
 		if s.AcceptedSequence >= math.MaxInt64 {
 			return errors.New("target sequence exhausted")
 		}
-		p := Intent{Status: "prepared", Sequence: s.AcceptedSequence + 1, Operation: operation, Content: bytes.Clone(canonical)}
+		p := Intent{PlanID: planID, PlanIndex: index, Status: "prepared", Sequence: s.AcceptedSequence + 1, Operation: operation, Content: bytes.Clone(canonical)}
 		p.Digest = intentDigest(operation, p.Content)
 		if !validIntent(p) {
 			return errors.New("invalid target operation")
@@ -248,7 +266,7 @@ func (j *Journal) PendingError() error {
 }
 
 func sameIntent(a, b Intent) bool {
-	return a.Sequence == b.Sequence && a.Digest == b.Digest && a.Operation == b.Operation && bytes.Equal(a.Content, b.Content)
+	return a.PlanID == b.PlanID && a.PlanIndex == b.PlanIndex && a.Sequence == b.Sequence && a.Digest == b.Digest && a.Operation == b.Operation && bytes.Equal(a.Content, b.Content)
 }
 
 func (j *Journal) markSending(intent Intent) error {
@@ -300,6 +318,10 @@ func (j *Journal) Accept(intent Intent) error {
 			delete(s.ManagedIDs, id)
 		}
 		s.AcceptedSequence = intent.Sequence
+		if intent.PlanID != "" {
+			// decode validated that this pending intent is exactly the next plan item.
+			s.Plan.Cursor++
+		}
 		s.Pending = nil
 		return j.write(tx, s)
 	})

@@ -21,6 +21,7 @@ type PendingInspection struct {
 }
 
 type Inspection struct {
+	ApplicationPlan  *ApplicationPlan              `json:"application_plan,omitempty"`
 	ConnectionID     string                        `json:"connection_id"`
 	Region           string                        `json:"region"`
 	Mode             string                        `json:"mode"`
@@ -102,7 +103,7 @@ func inspectState(directory string, use func(*Inspection) error) (*Inspection, e
 	out := &Inspection{ConnectionID: d.Approved.Binding.ConnectionID, Region: d.Approved.Binding.Region,
 		Mode: d.Approved.Binding.Mode, DesiredState: d.Approved.Control.DesiredState,
 		DesiredRevision: d.Approved.Control.DesiredRevision, Phase: d.Phase, ReasonCode: d.Reason,
-		TargetCreated: d.TargetCreated, CreationAttempt: d.CreationAttempt,
+		TargetCreated: d.TargetCreated, CreationAttempt: d.CreationAttempt, ApplicationPlan: state.Plan,
 		AcceptedSequence: state.AcceptedSequence, ManagedIDCount: len(state.ManagedIDs), Source: metadata,
 		RecoveryRequired: d.Reason == "target_outcome_uncertain" || (d.CreationAttempt && !d.TargetCreated),
 		LocalStateOnly:   true}

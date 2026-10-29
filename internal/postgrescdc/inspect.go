@@ -21,14 +21,15 @@ func OpenReadOnlyStore(path string) (*Store, error) {
 }
 
 type SourceInspection struct {
-	Mode              string  `json:"mode"`
-	CheckpointPresent bool    `json:"checkpoint_present"`
-	LSN               string  `json:"lsn,omitempty"`
-	Rows              int     `json:"rows"`
-	CurrentRevision   *uint64 `json:"current_revision,omitempty"`
-	PreparedRevision  *uint64 `json:"prepared_revision,omitempty"`
-	PreparedRows      int     `json:"prepared_rows,omitempty"`
-	BootstrapPresent  bool    `json:"bootstrap_present"`
+	PreparedTransactionLSN string  `json:"prepared_transaction_lsn,omitempty"`
+	Mode                   string  `json:"mode"`
+	CheckpointPresent      bool    `json:"checkpoint_present"`
+	LSN                    string  `json:"lsn,omitempty"`
+	Rows                   int     `json:"rows"`
+	CurrentRevision        *uint64 `json:"current_revision,omitempty"`
+	PreparedRevision       *uint64 `json:"prepared_revision,omitempty"`
+	PreparedRows           int     `json:"prepared_rows,omitempty"`
+	BootstrapPresent       bool    `json:"bootstrap_present"`
 }
 
 // Inspect returns bounded metadata, never row values or credentials.
@@ -38,6 +39,16 @@ func (s *Store) Inspect(fingerprint, mode string) (*SourceInspection, error) {
 		return nil, err
 	}
 	out := &SourceInspection{Mode: mode}
+	transaction, err := s.PreparedTransaction()
+	if err != nil {
+		return nil, err
+	}
+	if transaction != nil {
+		if mode != "continuous" {
+			return nil, errors.New("snapshot source has a prepared logical transaction")
+		}
+		out.PreparedTransactionLSN = pglogrepl.LSN(transaction.Next.LSN).String()
+	}
 	current, err := s.CurrentCut(fingerprint)
 	if err != nil {
 		return nil, err

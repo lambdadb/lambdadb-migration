@@ -454,6 +454,20 @@ func (w *Worker) execute(ctx context.Context, a protocol.Approved) error {
 	if err != nil {
 		return errors.New("source_setup_required")
 	}
+	if err = w.recoverTransaction(ctx, capture, dsn, guarded); err != nil {
+		return err
+	}
+	d, err = w.data()
+	if err != nil {
+		return err
+	}
+	if d.Plan != nil && d.Plan.Revision < a.Control.ResyncRevision {
+		previous := a
+		previous.Control.ResyncRevision = d.Plan.Revision
+		if err = w.prepareAndApply(ctx, previous, selection, capture, dsn, guarded); err != nil {
+			return err
+		}
+	}
 	if err = w.prepareAndApply(ctx, a, selection, capture, dsn, guarded); err != nil {
 		return err
 	}
@@ -467,8 +481,34 @@ func (w *Worker) execute(ctx context.Context, a protocol.Approved) error {
 		return err
 	}
 	return capture.Stream(ctx, dsn, func(ctx context.Context, old, next *postgrescdc.State) error {
-		return w.applyChanges(ctx, guarded, old.Rows, next.Rows)
+		if err := w.source.PrepareTransaction(old, next); err != nil {
+			return err
+		}
+		return w.applyChanges(ctx, guarded, old, next)
 	}, nil)
+}
+
+// Finish a retained commit before a new stream or resync can replace its plan.
+// Save clears the prepared state atomically with the new row image and position.
+func (w *Worker) recoverTransaction(ctx context.Context, capture *postgrescdc.Capture, dsn string, target IntentTarget) error {
+	p, err := w.source.PreparedTransaction()
+	if err != nil || p == nil {
+		return err
+	}
+	if err = capture.ValidateCut(ctx, dsn, p.Next); err != nil {
+		return errors.New("source_setup_required")
+	}
+	old, err := w.source.Load()
+	if err != nil {
+		return err
+	}
+	if err = w.applyChanges(ctx, target, old, p.Next); err != nil {
+		return err
+	}
+	if err = w.authority(); err != nil {
+		return err
+	}
+	return w.source.Save(p.Next)
 }
 
 type guardedTarget struct {

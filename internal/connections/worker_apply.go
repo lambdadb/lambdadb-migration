@@ -262,39 +262,33 @@ func (w *Worker) reconcile(ctx context.Context, target IntentTarget, revision ui
 	if plan.DeleteCursor < 0 || plan.DeleteCursor > len(plan.Deletes) || plan.PutCursor < 0 || plan.PutCursor > len(ids) {
 		return errors.New("state_invalid")
 	}
-	for index := plan.DeleteCursor; index < len(plan.Deletes); index++ {
-		if err = w.delete(ctx, target, plan.Deletes[index]); err != nil {
-			return err
-		}
-		if err = w.update(func(d *workerData) error { d.Plan.DeleteCursor = index + 1; return nil }); err != nil {
-			return err
-		}
+	var operations []targetOperation
+	for _, id := range plan.Deletes[plan.DeleteCursor:] {
+		operations = append(operations, deleteOperation(id))
 	}
 	for index := plan.PutCursor; index < len(ids); index++ {
 		id := ids[index]
-		if err = w.put(ctx, target, id, rows[id]); err != nil {
+		op, err := putOperation(id, rows[id])
+		if err != nil {
 			return err
 		}
-		if err = w.update(func(d *workerData) error { d.Plan.PutCursor = index + 1; return nil }); err != nil {
-			return err
-		}
+		operations = append(operations, op)
 	}
-	return nil
-}
-func (w *Worker) delete(ctx context.Context, target IntentTarget, id string) error {
-	if err := ctx.Err(); err != nil {
+	if err = w.journal.applyPlan(ctx, target, "cut/"+stringRevision(revision), operations); err != nil {
 		return err
 	}
+	return w.update(func(d *workerData) error {
+		d.Plan.DeleteCursor = len(plan.Deletes)
+		d.Plan.PutCursor = len(ids)
+		return nil
+	})
+}
+
+func deleteOperation(id string) targetOperation {
 	raw, _ := json.Marshal(map[string]any{"ids": []string{id}})
-	if err := w.journal.Apply(ctx, target, "delete", raw); err != nil {
-		return err
-	}
-	return nil
+	return targetOperation{Operation: "delete", Content: raw}
 }
-func (w *Worker) put(ctx context.Context, target IntentTarget, id string, row postgrescdc.Row) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+func putOperation(id string, row postgrescdc.Row) (targetOperation, error) {
 	doc := make(map[string]json.RawMessage, len(row)+1)
 	for key, value := range row {
 		doc[key] = value
@@ -302,27 +296,25 @@ func (w *Worker) put(ctx context.Context, target IntentTarget, id string, row po
 	doc["id"], _ = json.Marshal(id)
 	raw, err := json.Marshal(map[string]any{"docs": []map[string]json.RawMessage{doc}})
 	if err != nil {
-		return errors.New("state_invalid")
+		return targetOperation{}, errors.New("state_invalid")
 	}
-	if err = w.journal.Apply(ctx, target, "upsert", raw); err != nil {
-		return err
-	}
-	return nil
+	return targetOperation{Operation: "upsert", Content: raw}, nil
 }
-func (w *Worker) applyChanges(ctx context.Context, target IntentTarget, old, next map[string]postgrescdc.Row) error {
-	for _, id := range postgrescdc.SortedRowIDs(old) {
-		if next[id] == nil {
-			if err := w.delete(ctx, target, id); err != nil {
-				return err
-			}
+func (w *Worker) applyChanges(ctx context.Context, target IntentTarget, old, next *postgrescdc.State) error {
+	var operations []targetOperation
+	for _, id := range postgrescdc.SortedRowIDs(old.Rows) {
+		if next.Rows[id] == nil {
+			operations = append(operations, deleteOperation(id))
 		}
 	}
-	for _, id := range postgrescdc.SortedRowIDs(next) {
-		if old[id] == nil || !postgrescdc.EqualRows(old[id], next[id]) {
-			if err := w.put(ctx, target, id, next[id]); err != nil {
+	for _, id := range postgrescdc.SortedRowIDs(next.Rows) {
+		if old.Rows[id] == nil || !postgrescdc.EqualRows(old.Rows[id], next.Rows[id]) {
+			op, err := putOperation(id, next.Rows[id])
+			if err != nil {
 				return err
 			}
+			operations = append(operations, op)
 		}
 	}
-	return nil
+	return w.journal.applyPlan(ctx, target, "transaction/"+stringRevision(old.LSN)+"/"+stringRevision(next.LSN), operations)
 }

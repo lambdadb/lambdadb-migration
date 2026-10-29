@@ -108,6 +108,20 @@ A paused connection still retains WAL; monitor disk pressure and retention.
 
 ## Recovery and application
 
+Journal format 4 binds each target intent to a deterministic application plan.
+Confirmed acceptance advances its cursor and managed-ID inventory atomically.
+Snapshot/resync retries and replay of a decoded source transaction skip accepted
+items. Continuous mode retains the next source row image before target application
+and clears it atomically with the committed source checkpoint. Restart finishes
+that retained plan before a newer resync. An unresolved sending intent still stops
+as `target_outcome_uncertain`; the plan never authorizes its retransmission.
+
+The new worker reads format 3 ordinary-API journals and writes format 4 on the
+next update; older worker binaries refuse format 4. This does not authorize an
+automatic downgrade or reinterpret older ordered-ingestion formats. Local storage
+remains the default. The optional S3 recovery design is owned by
+`lambdadb-backend/docs/CONNECTION_S3_STATE_DESIGN.md` and is not yet implemented.
+
 `connection.db` atomically persists immutable target intents, their transmission
 state, a local journal sequence, accepted managed document IDs, initial/resync
 cursors, approved references and observations. `source.db` retains source identity,
