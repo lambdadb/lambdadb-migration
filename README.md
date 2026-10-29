@@ -552,9 +552,12 @@ goreleaser release --snapshot --clean
 
    Tag pushes matching `v*` run the release workflow and publish GoReleaser
    artifacts to GitHub Releases. Never move a published tag.
-5. When `main` has commits absent from `develop` (a hotfix or a Dependabot
-   security update merged into `main`), open a `main` -> `develop` pull request
-   and merge it with **Create a merge commit**. Never squash or rebase this
+5. After every release, and whenever `main` has other commits absent from
+   `develop` (a hotfix or a Dependabot security update merged into `main`),
+   open a `main` -> `develop` pull request and merge it with
+   **Create a merge commit**. The promotion merge commit itself is absent from
+   `develop`, so without this sync the release tag is unreachable from
+   `develop`. Never squash or rebase this
    synchronization; that drops the shared ancestry, so later comparisons repeat
    synchronized commits and release tags become unreachable from `develop`.
    Afterwards, `git merge-base --is-ancestor <main-commit> origin/develop` must
