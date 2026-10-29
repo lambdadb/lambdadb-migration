@@ -564,7 +564,8 @@ goreleaser release --snapshot --clean
    `git merge-base --is-ancestor origin/main origin/develop` must succeed.
 5. For a hotfix, cut `hotfix/X.Y.Z` from `main`, merge it into `main` with a
    merge commit, tag, and back-merge `main` into `develop` as above.
-6. Delete `release/*` and `hotfix/*` branches after they merge.
+6. Keep `release/X.Y.Z` until its final promotion, then delete it; delete
+   `hotfix/*` branches after they merge.
 
 Once lambdadb/lambdadb-iac#22 is applied, organization rulesets enforce this:
 `develop` and `main` cannot be deleted or force-pushed and accept changes only
