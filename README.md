@@ -532,14 +532,58 @@ Create a local release snapshot with GoReleaser:
 goreleaser release --snapshot --clean
 ```
 
-Publish a GitHub release:
+Publish a GitHub release from a commit on `main`, in this order:
 
-```bash
-git tag v0.1.3
-git push origin v0.1.3
-```
+1. Run the **Release verification** workflow from `main` (Actions tab, or
+   `gh workflow run release-verification.yml --ref main -f commit=<sha>`). It
+   runs the fixture live suite against production on that commit. An empty
+   `commit` verifies the current head of `main`.
+2. After it passes, tag the verified commit and push the tag:
 
-Tag pushes matching `v*` run the release workflow and publish GoReleaser artifacts to GitHub Releases.
+   ```bash
+   git tag v0.1.3 <sha>
+   git push origin v0.1.3
+   ```
+
+Tag pushes matching `v*` run the release workflow. It rejects a tag whose commit
+is not on `main`, runs the production fixture live suite again, and only then
+publishes GoReleaser artifacts to GitHub Releases. A failed smoke publishes
+nothing; fix the problem on `main` and release a new version instead of moving
+the tag.
+
+## Live Smoke Gates
+
+Deployed LambdaDB gates run the fixture live suite
+(`TestFixtureSourcesToLambdaDBLive`):
+
+| Event | LambdaDB environment |
+| :-- | :-- |
+| Pull request | None. CI has no credentials. |
+| Push to `main` | dev (`Dev live smoke` job in CI) |
+| Release verification (`workflow_dispatch` on `main`) | production |
+| `v*` tag push | production, before GoReleaser publishes |
+
+`.github/workflows/live-smoke.yml` is the shared job. It assumes a GitHub OIDC
+role, then `go run ./tools/livesmoke` reads the project API key from AWS Secrets
+Manager, masks it in the GitHub Actions log, and passes it only in the `go test` child
+environment, never in arguments, files, or artifacts. The runner fails on
+missing configuration, a failed secret read, a failed test, a skipped test or
+case, or a run that did not execute the live test.
+
+The workflows read these repository Variables. A missing Variable fails the run;
+it never falls back to the other environment.
+
+| Variable | Value |
+| :-- | :-- |
+| `LAMBDADB_DEV_BASE_URL`, `LAMBDADB_PROD_BASE_URL` | LambdaDB endpoint |
+| `LAMBDADB_DEV_PROJECT_NAME`, `LAMBDADB_PROD_PROJECT_NAME` | Dedicated smoke project (`migration-ci`) |
+| `LAMBDADB_DEV_SMOKE_AWS_ROLE_ARN`, `LAMBDADB_PROD_SMOKE_AWS_ROLE_ARN` | OIDC roles `lambdadb-migration-smoke` and `lambdadb-migration-prod-smoke` |
+| `LAMBDADB_DEV_SMOKE_SECRET_ARN`, `LAMBDADB_PROD_SMOKE_SECRET_ARN` | Secrets Manager ARN of the project API key (`ap-northeast-2`) |
+
+The dev role trusts `repo:lambdadb/lambdadb-migration:ref:refs/heads/main`; the
+production role trusts that subject and
+`repo:lambdadb/lambdadb-migration:ref:refs/tags/v*`. Grant each role read access only to its
+own environment's secret.
 
 ## Integration Tests
 
@@ -551,6 +595,50 @@ LAMBDADB_MIGRATION_RUN_QDRANT_MOCK_E2E=1 go test ./integration_tests -run TestQd
 ```
 
 The test seeds temporary Qdrant collections and migrates them through the CLI path into an in-process LambdaDB mock server.
+The same flag runs `TestQdrantFixtureSourceMatchesAdapter`, which checks that the
+Qdrant-shaped fixture source below returns the same inventory and records as the
+real Qdrant adapter.
+
+### Fixture live suite
+
+`TestFixtureSourcesToLambdaDBLive` needs no source database. In-memory fixture
+sources return what the Qdrant, Pinecone, and Elasticsearch adapters produce:
+the Qdrant fixtures above, Pinecone dense and sparse vectors with metadata, and
+an Elasticsearch index with analyzer-backed text, keyword, numeric, date,
+boolean, and `dense_vector` fields. Each case runs the CLI migration pipeline
+into a temporary collection in a real LambdaDB project, checks the validation
+report, the collection schema, every document's content, and `numDocs`, then
+deletes the collection and verifies that it is gone. Vector fixtures use 64
+dimensions, the LambdaDB minimum.
+
+Run it locally against a project where temporary collections may be created
+and deleted:
+
+```bash
+set -a
+source .env.local
+set +a
+
+LAMBDADB_MIGRATION_RUN_FIXTURE_LIVE_E2E=1 go test ./integration_tests \
+  -run '^TestFixtureSourcesToLambdaDBLive$' -count=1 -v -timeout 30m
+```
+
+With the flag set, missing LambdaDB variables fail the test instead of skipping
+it. To run exactly what CI runs, with the key read from Secrets Manager through
+your AWS profile:
+
+```bash
+AWS_PROFILE=dev \
+LAMBDADB_BASE_URL="https://internal-dev-aws-apne2-v3-c05a2b5d492a.lambdadb.ai" \
+LAMBDADB_PROJECT_NAME=migration-ci \
+LAMBDADB_SMOKE_SECRET_ARN="<LAMBDADB_DEV_SMOKE_SECRET_ARN value>" \
+go run ./tools/livesmoke
+```
+
+Use the `LAMBDADB_PROD_` values from `gh variable list --repo lambdadb/lambdadb-migration`
+for production. The real-source tests below remain manual.
+
+### Real-source tests
 
 For controlled end-to-end checks against a real LambdaDB project, copy `.env.example` to `.env.local`, fill in credentials, and run:
 

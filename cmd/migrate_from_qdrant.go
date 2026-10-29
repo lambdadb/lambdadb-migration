@@ -40,7 +40,7 @@ func (c *MigrateQdrantCmd) Run(globals *Globals) error {
 	}
 	defer src.Close()
 
-	return runMigration(ctx, migrationRunConfig{
+	return RunMigration(ctx, MigrationRun{
 		SourceKind:       "qdrant",
 		SourceCollection: c.Qdrant.Collection,
 		Source:           src,
@@ -50,7 +50,8 @@ func (c *MigrateQdrantCmd) Run(globals *Globals) error {
 	})
 }
 
-type migrationRunConfig struct {
+// MigrationRun configures one migration from an opened source into LambdaDB.
+type MigrationRun struct {
 	SourceKind       string
 	SourceCollection string
 	Source           source.Source
@@ -59,7 +60,9 @@ type migrationRunConfig struct {
 	MappingFile      string
 }
 
-func runMigration(ctx context.Context, c migrationRunConfig) error {
+// RunMigration runs the pipeline shared by every source command. The fixture
+// live suite calls it with in-memory sources to exercise the CLI migration path.
+func RunMigration(ctx context.Context, c MigrationRun) error {
 	if err := c.Migration.ValidateConfig(); err != nil {
 		return err
 	}

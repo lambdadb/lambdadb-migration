@@ -69,7 +69,7 @@ func TestCompletedCheckpointValidation(t *testing.T) {
 			store := checkpoint.NewFileStore(cfg.Migration.CheckpointPath)
 			key := sourceCheckpointKey("qdrant", "source", "test", "articles")
 			for attempt := 0; attempt < 2; attempt++ {
-				err := runMigration(ctx, cfg)
+				err := RunMigration(ctx, cfg)
 				if err == nil || !strings.Contains(err.Error(), `field "title" mismatch`) {
 					t.Fatalf("validation error = %v", err)
 				}
@@ -81,7 +81,7 @@ func TestCompletedCheckpointValidation(t *testing.T) {
 			mu.Lock()
 			mismatch = false
 			mu.Unlock()
-			if err := runMigration(ctx, cfg); err != nil {
+			if err := RunMigration(ctx, cfg); err != nil {
 				t.Fatalf("validation retry: %v", err)
 			}
 			if cp, err := store.Load(ctx, key); cp != nil || err != nil {
@@ -135,7 +135,7 @@ func TestCheckpointCompletionCompatibility(t *testing.T) {
 				}
 			}
 			for run := 0; run < 2; run++ {
-				if err := runMigration(ctx, cfg); err != nil {
+				if err := RunMigration(ctx, cfg); err != nil {
 					t.Fatal(err)
 				}
 				cp, err := store.Load(ctx, key)
@@ -161,7 +161,7 @@ func TestCompletedCheckpointCannotSilentlySkipRequestedSamples(t *testing.T) {
 	if err := store.Save(ctx, key, checkpoint.Checkpoint{SourceDone: true, AcceptedRecords: 1}); err != nil {
 		t.Fatal(err)
 	}
-	err := runMigration(ctx, cfg)
+	err := RunMigration(ctx, cfg)
 	if err == nil || !strings.Contains(err.Error(), "completed checkpoint has no validation samples") {
 		t.Fatalf("error = %v", err)
 	}
@@ -170,8 +170,8 @@ func TestCompletedCheckpointCannotSilentlySkipRequestedSamples(t *testing.T) {
 	}
 }
 
-func checkpointRunConfig(src source.Source, url, dir string) migrationRunConfig {
-	return migrationRunConfig{
+func checkpointRunConfig(src source.Source, url, dir string) MigrationRun {
+	return MigrationRun{
 		SourceKind: "qdrant", SourceCollection: "source", Source: src,
 		LambdaDB:  config.LambdaDBConfig{BaseURL: url, ProjectName: "test", Collection: "articles", APIKey: "test-key"},
 		Migration: config.MigrationConfig{BatchSize: 2, MaxBatchBytes: 6000000, WriteMode: config.WriteModeUpsert, CreateCollection: testBoolPtr(false), RetryMaxAttempts: 1, CheckpointPath: dir},

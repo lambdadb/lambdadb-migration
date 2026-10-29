@@ -324,13 +324,13 @@ type qdrantPayloadIndex struct {
 func unnamedDenseFixture() qdrantFixture {
 	return qdrantFixture{
 		vectorsConfig: qdrantapi.NewVectorsConfig(&qdrantapi.VectorParams{
-			Size:     3,
+			Size:     fixtureVectorDims,
 			Distance: qdrantapi.Distance_Cosine,
 		}),
 		points: []*qdrantapi.PointStruct{
 			{
 				Id:      qdrantapi.NewIDNum(1),
-				Vectors: qdrantapi.NewVectors(0.1, 0.2, 0.3),
+				Vectors: qdrantapi.NewVectorsDense(fixtureVector(0.1, 0.2, 0.3)),
 				Payload: qdrantapi.NewValueMap(map[string]any{
 					"title":        "one",
 					"metadata.url": "https://example.com/1",
@@ -338,7 +338,7 @@ func unnamedDenseFixture() qdrantFixture {
 			},
 			{
 				Id:      qdrantapi.NewIDNum(2),
-				Vectors: qdrantapi.NewVectors(0.4, 0.5, 0.6),
+				Vectors: qdrantapi.NewVectorsDense(fixtureVector(0.4, 0.5, 0.6)),
 				Payload: qdrantapi.NewValueMap(map[string]any{
 					"title":        "two",
 					"metadata.url": "https://example.com/2",
@@ -351,23 +351,23 @@ func unnamedDenseFixture() qdrantFixture {
 func namedDenseFixture() qdrantFixture {
 	return qdrantFixture{
 		vectorsConfig: qdrantapi.NewVectorsConfigMap(map[string]*qdrantapi.VectorParams{
-			"title_dense": {Size: 2, Distance: qdrantapi.Distance_Cosine},
-			"body_dense":  {Size: 4, Distance: qdrantapi.Distance_Dot},
+			"title_dense": {Size: fixtureVectorDims, Distance: qdrantapi.Distance_Cosine},
+			"body_dense":  {Size: fixtureVectorDims, Distance: qdrantapi.Distance_Euclid},
 		}),
 		points: []*qdrantapi.PointStruct{
 			{
 				Id: qdrantapi.NewIDNum(101),
 				Vectors: qdrantapi.NewVectorsMap(map[string]*qdrantapi.Vector{
-					"title_dense": qdrantapi.NewVectorDense([]float32{0.1, 0.2}),
-					"body_dense":  qdrantapi.NewVectorDense([]float32{0.1, 0.2, 0.3, 0.4}),
+					"title_dense": qdrantapi.NewVectorDense(fixtureVector(0.1, 0.2)),
+					"body_dense":  qdrantapi.NewVectorDense(fixtureVector(0.1, 0.2, 0.3, 0.4)),
 				}),
 				Payload: qdrantapi.NewValueMap(map[string]any{"title": "named one"}),
 			},
 			{
 				Id: qdrantapi.NewIDNum(102),
 				Vectors: qdrantapi.NewVectorsMap(map[string]*qdrantapi.Vector{
-					"title_dense": qdrantapi.NewVectorDense([]float32{0.3, 0.4}),
-					"body_dense":  qdrantapi.NewVectorDense([]float32{0.5, 0.6, 0.7, 0.8}),
+					"title_dense": qdrantapi.NewVectorDense(fixtureVector(0.3, 0.4)),
+					"body_dense":  qdrantapi.NewVectorDense(fixtureVector(0.5, 0.6, 0.7, 0.8)),
 				}),
 				Payload: qdrantapi.NewValueMap(map[string]any{"title": "named two"}),
 			},
@@ -378,7 +378,7 @@ func namedDenseFixture() qdrantFixture {
 func denseSparsePayloadIndexFixture() qdrantFixture {
 	return qdrantFixture{
 		vectorsConfig: qdrantapi.NewVectorsConfigMap(map[string]*qdrantapi.VectorParams{
-			"body_dense": {Size: 3, Distance: qdrantapi.Distance_Cosine},
+			"body_dense": {Size: fixtureVectorDims, Distance: qdrantapi.Distance_Cosine},
 		}),
 		sparseVectorsConfig: qdrantapi.NewSparseVectorsConfig(map[string]*qdrantapi.SparseVectorParams{
 			"keywords_sparse": {},
@@ -391,7 +391,7 @@ func denseSparsePayloadIndexFixture() qdrantFixture {
 			{
 				Id: qdrantapi.NewIDNum(201),
 				Vectors: qdrantapi.NewVectorsMap(map[string]*qdrantapi.Vector{
-					"body_dense":      qdrantapi.NewVectorDense([]float32{0.2, 0.3, 0.4}),
+					"body_dense":      qdrantapi.NewVectorDense(fixtureVector(0.2, 0.3, 0.4)),
 					"keywords_sparse": qdrantapi.NewVectorSparse([]uint32{3, 9}, []float32{0.7, 0.2}),
 				}),
 				Payload: qdrantapi.NewValueMap(map[string]any{
@@ -402,7 +402,7 @@ func denseSparsePayloadIndexFixture() qdrantFixture {
 			{
 				Id: qdrantapi.NewIDNum(202),
 				Vectors: qdrantapi.NewVectorsMap(map[string]*qdrantapi.Vector{
-					"body_dense":      qdrantapi.NewVectorDense([]float32{0.5, 0.6, 0.7}),
+					"body_dense":      qdrantapi.NewVectorDense(fixtureVector(0.5, 0.6, 0.7)),
 					"keywords_sparse": qdrantapi.NewVectorSparse([]uint32{1, 8}, []float32{0.4, 0.9}),
 				}),
 				Payload: qdrantapi.NewValueMap(map[string]any{
@@ -450,7 +450,7 @@ func multiVectorFixture() qdrantFixture {
 func additionalPayloadIndexTypesFixture() qdrantFixture {
 	return qdrantFixture{
 		vectorsConfig: qdrantapi.NewVectorsConfig(&qdrantapi.VectorParams{
-			Size:     3,
+			Size:     fixtureVectorDims,
 			Distance: qdrantapi.Distance_Cosine,
 		}),
 		payloadIndexes: []qdrantPayloadIndex{
@@ -462,7 +462,7 @@ func additionalPayloadIndexTypesFixture() qdrantFixture {
 		points: []*qdrantapi.PointStruct{
 			{
 				Id:      qdrantapi.NewIDNum(501),
-				Vectors: qdrantapi.NewVectors(0.1, 0.2, 0.3),
+				Vectors: qdrantapi.NewVectorsDense(fixtureVector(0.1, 0.2, 0.3)),
 				Payload: qdrantapi.NewValueMap(map[string]any{
 					"body":         "first searchable body",
 					"score":        0.95,
@@ -476,7 +476,7 @@ func additionalPayloadIndexTypesFixture() qdrantFixture {
 			},
 			{
 				Id:      qdrantapi.NewIDNum(502),
-				Vectors: qdrantapi.NewVectors(0.4, 0.5, 0.6),
+				Vectors: qdrantapi.NewVectorsDense(fixtureVector(0.4, 0.5, 0.6)),
 				Payload: qdrantapi.NewValueMap(map[string]any{
 					"body":         "second searchable body",
 					"score":        0.87,
@@ -498,11 +498,11 @@ func largeDenseFixture(count int) qdrantFixture {
 		id := uint64(1000 + i)
 		points = append(points, &qdrantapi.PointStruct{
 			Id: qdrantapi.NewIDNum(id),
-			Vectors: qdrantapi.NewVectors(
+			Vectors: qdrantapi.NewVectorsDense(fixtureVector(
 				float32(i%10)/10,
 				float32((i+1)%10)/10,
 				float32((i+2)%10)/10,
-			),
+			)),
 			Payload: qdrantapi.NewValueMap(map[string]any{
 				"title": fmt.Sprintf("large fixture %d", i),
 				"rank":  int64(i),
@@ -511,7 +511,7 @@ func largeDenseFixture(count int) qdrantFixture {
 	}
 	return qdrantFixture{
 		vectorsConfig: qdrantapi.NewVectorsConfig(&qdrantapi.VectorParams{
-			Size:     3,
+			Size:     fixtureVectorDims,
 			Distance: qdrantapi.Distance_Cosine,
 		}),
 		payloadIndexes: []qdrantPayloadIndex{
@@ -519,6 +519,16 @@ func largeDenseFixture(count int) qdrantFixture {
 		},
 		points: points,
 	}
+}
+
+// LambdaDB accepts vector dimensions from 64 through 4096.
+const fixtureVectorDims = 64
+
+// fixtureVector pads the leading values with zeros to fixtureVectorDims.
+func fixtureVector(values ...float32) []float32 {
+	vector := make([]float32, fixtureVectorDims)
+	copy(vector, values)
+	return vector
 }
 
 func additionalPayloadIndexTypesMapping(targetCollection string) config.MappingConfig {
@@ -530,7 +540,7 @@ func additionalPayloadIndexTypesMapping(targetCollection string) config.MappingC
 		Vectors: map[string]config.VectorMapping{
 			"": {
 				TargetField: "dense",
-				Dimensions:  3,
+				Dimensions:  fixtureVectorDims,
 				Similarity:  "cosine",
 			},
 		},

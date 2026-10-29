@@ -22,7 +22,7 @@ func (c *MigratePineconeCmd) Run(globals *Globals) error {
 	}
 	defer src.Close()
 
-	return runMigration(ctx, migrationRunConfig{
+	return RunMigration(ctx, MigrationRun{
 		SourceKind:       "pinecone",
 		SourceCollection: pineconeSourceCollection(c.Pinecone),
 		Source:           src,
