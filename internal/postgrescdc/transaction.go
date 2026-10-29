@@ -30,10 +30,17 @@ func (s *Store) PrepareTransaction(old, next *State) error {
 	if err != nil || len(raw) > MaxStateBytes {
 		return errors.New("source transaction state budget exceeded")
 	}
+	previous, err := json.Marshal(old)
+	if err != nil || len(previous) > MaxStateBytes {
+		return errors.New("source transaction state budget exceeded")
+	}
 	from, _ := json.Marshal(old.LSN)
 	return s.db.Update(func(tx *bolt.Tx) error {
 		current, err := s.load(tx)
-		if err != nil || !reflect.DeepEqual(current, old) {
+		// Compare the persisted representation: Save compacts RawMessage JSON,
+		// while the replication decoder may retain its original whitespace.
+		checkpoint, encodeErr := json.Marshal(current)
+		if err != nil || encodeErr != nil || !bytes.Equal(checkpoint, previous) {
 			return errors.New("source transaction checkpoint changed")
 		}
 		b := tx.Bucket(transactionBucket)
