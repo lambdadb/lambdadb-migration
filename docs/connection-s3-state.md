@@ -5,9 +5,11 @@ do not require S3 or AWS credentials for state storage. The `connection-worker`
 supports explicitly selected S3 recovery while retaining local bbolt working state.
 Other features, including managed secret resolution, retain their own credentials.
 
-S3 mode is required by the planned EFS-free managed deployment. This guide describes
-the worker implementation, not production qualification of that deployment. The
-cross-repository protocol is in `lambdadb-backend/docs/CONNECTION_S3_STATE_DESIGN.md`.
+S3 mode is required by the EFS-free managed task templates. Isolated snapshot and
+continuous AWS API qualification passed on October 29; this is not a production
+rollout. The detailed report and remaining load/retention/operations gates are in
+`lambdadb-backend/docs/CONNECTION_S3_QUALIFICATION.md`. This guide describes the
+worker. The cross-repository protocol is in `lambdadb-backend/docs/CONNECTION_S3_STATE_DESIGN.md`.
 
 ## Store initialization and worker startup
 

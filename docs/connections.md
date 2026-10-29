@@ -11,9 +11,10 @@ No Console or production provisioning is included.
 
 Build with `go build ./cmd/connection-worker`, or
 `docker build -f Dockerfile.connection-worker -t connection-worker:local .`.
-One worker process owns one connection's retained files. Regional control is one
-shared HTTPS service per enabled target region. A scheduler is not implemented;
-operators launch the first local spike's worker with the registered connection ID.
+One worker process owns one connection's working files. Regional control is a
+shared HTTPS API per enabled target region; S3 mode supports regional replicas.
+The backend regional runtime owns managed Fargate launch and confirmed-stop
+handoff. Standalone operators can launch the worker with a registered connection ID.
 
 ```sh
 connection-worker \
@@ -122,7 +123,8 @@ automatic downgrade or reinterpret older ordered-ingestion formats. Local storag
 remains the default. Optional S3 worker recovery is described in
 [connection-s3-state.md](connection-s3-state.md). The backend-owned
 `docs/CONNECTION_S3_STATE_DESIGN.md` specifies the complete managed deployment;
-regional replicas and EFS-free infrastructure require their own qualification.
+bounded regional-replica and EFS-free Fargate qualification is recorded in
+`docs/CONNECTION_S3_QUALIFICATION.md` there. This does not imply production rollout.
 
 `connection.db` atomically persists immutable target intents, their transmission
 state, a local journal sequence, accepted managed document IDs, initial/resync
