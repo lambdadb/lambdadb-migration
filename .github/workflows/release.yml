@@ -6,12 +6,44 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  # Tags must point at a commit on main.
+  check-tag:
+    name: Verify tag commit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify the tag commit is on main
+        run: |
+          git fetch origin main
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "Tag $GITHUB_REF_NAME points at $(git rev-parse HEAD), which is not on main" >&2
+            exit 1
+          fi
+
+  # GoReleaser publishes only after the production live smoke passes.
+  live-smoke:
+    name: Production live smoke
+    needs: check-tag
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/live-smoke.yml
+    with:
+      environment: prod
+
   goreleaser:
     name: Publish release
+    needs: live-smoke
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

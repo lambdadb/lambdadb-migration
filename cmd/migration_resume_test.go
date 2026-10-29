@@ -104,7 +104,7 @@ func TestMigrationCheckpointResume(t *testing.T) {
 			defer server.Close()
 			serverURL = server.URL
 			src := &resumeSource{}
-			cfg := migrationRunConfig{
+			cfg := MigrationRun{
 				SourceKind: "qdrant", SourceCollection: "source", Source: src,
 				LambdaDB:  config.LambdaDBConfig{BaseURL: server.URL, ProjectName: "test", Collection: "articles", APIKey: "test-key"},
 				Migration: config.MigrationConfig{BatchSize: 2, MaxBatchBytes: 25, WriteMode: tt.mode, RetryMaxAttempts: 1, CheckpointPath: t.TempDir()},
@@ -122,7 +122,7 @@ func TestMigrationCheckpointResume(t *testing.T) {
 					t.Fatalf("checkpoint = %+v, want accepted=%d sourceDone=%v cursor=page2", cp, accepted, done)
 				}
 			}
-			if err := runMigration(ctx, cfg); err == nil {
+			if err := RunMigration(ctx, cfg); err == nil {
 				t.Fatal("expected injected failure")
 			}
 			assertCheckpoint(1, false)
@@ -130,7 +130,7 @@ func TestMigrationCheckpointResume(t *testing.T) {
 			fail = false
 			mu.Unlock()
 			src.cursors = nil
-			if err := runMigration(ctx, cfg); err != nil {
+			if err := RunMigration(ctx, cfg); err != nil {
 				t.Fatalf("resume: %v", err)
 			}
 			assertCheckpoint(3, true)
@@ -147,7 +147,7 @@ func TestMigrationCheckpointResume(t *testing.T) {
 			// Explicit restart still ignores the saved cursor and accepted count.
 			cfg.Migration.Restart = true
 			src.cursors = nil
-			if err := runMigration(ctx, cfg); err != nil {
+			if err := RunMigration(ctx, cfg); err != nil {
 				t.Fatalf("restart: %v", err)
 			}
 			assertCheckpoint(3, true)
@@ -159,7 +159,7 @@ func TestMigrationCheckpointResume(t *testing.T) {
 			cfg.Migration.Restart = false
 			cfg.Migration.CleanupCheckpoint = true
 			src.cursors = nil
-			if err := runMigration(ctx, cfg); err != nil {
+			if err := RunMigration(ctx, cfg); err != nil {
 				t.Fatalf("cleanup: %v", err)
 			}
 			if len(src.cursors) != 0 {
