@@ -9,7 +9,7 @@ import (
 )
 
 // ErrUnavailable deliberately omits paths, stored values and underlying errors.
-var ErrUnavailable = errors.New("regional state storage unavailable; stop and inspect retained files")
+var ErrUnavailable = errors.New("state storage unavailable; stop and inspect recovery state")
 
 type transactions interface {
 	View(func(*bolt.Tx) error) error
@@ -24,6 +24,8 @@ type DB struct {
 	mu     sync.Mutex
 	db     transactions
 	failed bool
+	remote *Replica
+	name   string
 }
 
 func Guard(db *bolt.DB) *DB { return &DB{db: db} }
@@ -34,17 +36,30 @@ func (d *DB) Err() error {
 	if d.failed {
 		return ErrUnavailable
 	}
+	if d.remote != nil && d.remote.failed.Load() {
+		return ErrUnavailable
+	}
 	return nil
 }
 
 func (d *DB) transaction(fn func(*bolt.Tx) error, write bool) error {
+	if write && d.remote != nil {
+		d.remote.mu.Lock()
+		defer d.remote.mu.Unlock()
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.failed {
+	if d.failed || (d.remote != nil && d.remote.failed.Load()) {
 		return ErrUnavailable
 	}
 	var callbackErr error
-	callback := func(tx *bolt.Tx) error { callbackErr = fn(tx); return callbackErr }
+	callback := func(tx *bolt.Tx) error {
+		callbackErr = fn(tx)
+		if callbackErr == nil && write && d.remote != nil {
+			callbackErr = d.remote.commit(d.name, tx)
+		}
+		return callbackErr
+	}
 	var err error
 	if write {
 		err = d.db.Update(callback)
@@ -55,6 +70,9 @@ func (d *DB) transaction(fn func(*bolt.Tx) error, write bool) error {
 	// I/O failure. A begin/commit failure invalidates this process's handle.
 	if err != nil && callbackErr == nil {
 		d.failed = true
+		if d.remote != nil {
+			d.remote.failed.Store(true)
+		}
 		return ErrUnavailable
 	}
 	return err

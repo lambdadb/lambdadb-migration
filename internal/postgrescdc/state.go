@@ -149,8 +149,10 @@ func openStore(path string, create bool) (*Store, error) {
 	}
 	return &Store{db: statefile.Guard(db)}, nil
 }
-func (s *Store) StorageError() error { return s.db.Err() }
-func (s *Store) Close() error        { return s.db.Close() }
+func (s *Store) StorageError() error                      { return s.db.Err() }
+func (s *Store) Export() (statefile.Image, error)         { return statefile.Export(s.db) }
+func (s *Store) AttachReplica(r *statefile.Replica) error { return s.db.Attach(r, "source") }
+func (s *Store) Close() error                             { return s.db.Close() }
 func (s *Store) Load() (*State, error) {
 	var state *State
 	err := s.db.View(func(tx *bolt.Tx) error { var err error; state, err = s.load(tx); return err })

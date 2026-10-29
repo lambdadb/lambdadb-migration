@@ -20,7 +20,12 @@ import (
 func main() {
 	origin := flag.String("control-url", "", "regional HTTPS control origin")
 	id := flag.String("connection-id", "", "approved connection ID")
-	state := flag.String("state-dir", "", "retained per-connection regional state directory")
+	state := flag.String("state-dir", "", "local state directory, or working-cache root in S3 mode")
+	stateStore := flag.String("state-store", "local", "recovery authority: local or s3")
+	s3Bucket := flag.String("s3-bucket", "", "regional recovery bucket (S3 mode only)")
+	s3Prefix := flag.String("s3-prefix", "", "pinned deployment prefix ending in / (S3 mode only)")
+	s3StoreID := flag.String("s3-store-id", "", "pinned regional store identity (S3 mode only)")
+	stateEpoch := flag.Uint64("state-epoch", 1, "assigned execution epoch (S3 mode only; no lease takeover)")
 	region := flag.String("region", os.Getenv("AWS_REGION"), "worker region (defaults to approved target region)")
 	initialize := flag.Bool("initialize", false, "one-time initialization for a newly registered connection")
 	inspect := flag.Bool("inspect-state", false, "inspect a stopped worker's retained state read-only; never authorize resume")
@@ -28,6 +33,10 @@ func main() {
 	insecureSource := flag.Bool("allow-insecure-source", false, "allow plaintext PostgreSQL for isolated local testing")
 	caFile := flag.String("ca-file", "", "additional trusted CA PEM for regional/target HTTPS")
 	flag.Parse()
+	if (*stateStore != "local" && *stateStore != "s3") || (*stateStore == "local" && (*s3Bucket != "" || *s3Prefix != "" || *s3StoreID != "" || *stateEpoch != 1)) || (*stateStore == "s3" && (*s3Bucket == "" || *s3Prefix == "" || *s3StoreID == "" || *stateEpoch == 0 || *inspect)) {
+		fmt.Fprintln(os.Stderr, "invalid state store options; use connection-state for read-only S3 inspection")
+		os.Exit(1)
+	}
 	if *inspect {
 		if *initialize {
 			fmt.Fprintln(os.Stderr, "inspection cannot initialize state")
@@ -65,6 +74,9 @@ func main() {
 	}
 	control.Client.Transport = transport
 	worker := connections.Worker{Control: control, Secrets: connections.AWSSecrets{AllowEnvironment: *localSecrets}, StateDirectory: *state, Region: *region, Initialize: *initialize, AllowInsecureSource: *insecureSource, Transport: transport}
+	if *stateStore == "s3" {
+		worker.RemoteState = &connections.RemoteState{Bucket: *s3Bucket, Prefix: *s3Prefix, StoreID: *s3StoreID, Epoch: *stateEpoch}
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err = worker.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {

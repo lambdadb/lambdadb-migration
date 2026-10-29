@@ -14,7 +14,18 @@ import (
 	"github.com/jackc/pglogrepl"
 	"github.com/lambdadb/lambdadb-migration/internal/connections/protocol"
 	"github.com/lambdadb/lambdadb-migration/internal/postgrescdc"
+	"github.com/lambdadb/lambdadb-migration/internal/statefile"
 )
+
+// RemoteState is optional for standalone execution and required by managed S3
+// task templates. Objects is injected only by isolated tests or an embedding host.
+type RemoteState struct {
+	Bucket  string
+	Prefix  string
+	StoreID string
+	Epoch   uint64
+	Objects statefile.Objects
+}
 
 type syncPlan struct {
 	Revision     uint64   `json:"revision"`
@@ -38,6 +49,7 @@ type workerData struct {
 	Rows            uint64             `json:"rows"`
 }
 type Worker struct {
+	RemoteState         *RemoteState
 	Control             *Control
 	Secrets             SecretResolver
 	StateDirectory      string
@@ -169,6 +181,39 @@ func (w *Worker) Run(ctx context.Context) error {
 	if w.Initialize && observed != nil {
 		return errors.New("initialization forbidden for an already observed connection")
 	}
+	var replica *statefile.Replica
+	if w.RemoteState != nil {
+		cacheRoot := w.StateDirectory
+		lock, e := statefile.LockCache(cacheRoot)
+		if e != nil {
+			return e
+		}
+		defer lock.Close()
+		remote := w.RemoteState
+		objects := remote.Objects
+		if objects == nil {
+			objects, e = statefile.NewS3Objects(ctx, w.Region, remote.Bucket)
+			if e != nil {
+				return e
+			}
+		}
+		replica, e = statefile.OpenReplica(ctx, objects, remote.Prefix, statefile.Binding{StoreID: remote.StoreID, Region: w.Region, ConnectionID: approved.Binding.ConnectionID, Fingerprint: w.fingerprint}, remote.Epoch)
+		if e != nil {
+			return e
+		}
+		if w.Initialize {
+			w.StateDirectory, e = os.MkdirTemp(cacheRoot, "cache-")
+		} else {
+			var files map[string]statefile.Image
+			files, e = replica.Recover()
+			if e == nil {
+				w.StateDirectory, e = statefile.Materialize(cacheRoot, files)
+			}
+		}
+		if e != nil {
+			return e
+		}
+	}
 	if w.Initialize {
 		if err = os.MkdirAll(w.StateDirectory, 0700); err != nil {
 			return errors.New("regional state directory unavailable")
@@ -196,6 +241,29 @@ func (w *Worker) Run(ctx context.Context) error {
 		if err = w.journal.SaveData(raw); err != nil {
 			return err
 		}
+	}
+	if replica != nil {
+		if w.Initialize {
+			journal, e := statefile.Export(w.journal.db)
+			if e != nil {
+				return e
+			}
+			source, e := w.source.Export()
+			if e != nil {
+				return e
+			}
+			if err = replica.Initialize(map[string]statefile.Image{"connection": journal, "source": source}); err != nil {
+				return err
+			}
+		}
+		if err = w.journal.db.Attach(replica, "connection"); err != nil {
+			return err
+		}
+		if err = w.source.AttachReplica(replica); err != nil {
+			return err
+		}
+	}
+	if w.Initialize {
 		// The first atomic observation claims initialization. A second host cannot
 		// initialize the same ID concurrently with another sequence-one claimant.
 		if err = w.report(ctx); err != nil {

@@ -38,6 +38,7 @@ type Inspection struct {
 	RecoveryRequired bool                          `json:"recovery_required"`
 	ResumeAuthorized bool                          `json:"resume_authorized"`
 	LocalStateOnly   bool                          `json:"local_state_only"`
+	RemoteStateOnly  bool                          `json:"remote_state_only,omitempty"`
 }
 
 // InspectState requires a stopped worker and holds both files read-only together.

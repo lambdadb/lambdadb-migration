@@ -119,8 +119,10 @@ as `target_outcome_uncertain`; the plan never authorizes its retransmission.
 The new worker reads format 3 ordinary-API journals and writes format 4 on the
 next update; older worker binaries refuse format 4. This does not authorize an
 automatic downgrade or reinterpret older ordered-ingestion formats. Local storage
-remains the default. The optional S3 recovery design is owned by
-`lambdadb-backend/docs/CONNECTION_S3_STATE_DESIGN.md` and is not yet implemented.
+remains the default. Optional S3 worker recovery is described in
+[connection-s3-state.md](connection-s3-state.md). The backend-owned
+`docs/CONNECTION_S3_STATE_DESIGN.md` specifies the complete managed deployment;
+regional replicas and EFS-free infrastructure require their own qualification.
 
 `connection.db` atomically persists immutable target intents, their transmission
 state, a local journal sequence, accepted managed document IDs, initial/resync
@@ -129,7 +131,8 @@ selected complete rows, checkpoint, slot ownership and current/prepared cuts.
 Both are region-local, fsynced bbolt files protected by exclusive locks. Creation
 syncs parent directory entries before the first remote observation; failure stops
 initialization without claiming sequence one. This worker storage is independent of the engine's WAL storage; no EFS is required by
-the worker. Retained volume durability is required; remote state and HA are later.
+the worker. Local mode requires retained volume durability. S3 mode publishes
+recovery authority remotely before these local transactions can authorize progress.
 
 The worker calls ordinary supported collection creation and document upsert/delete
 HTTP APIs. It sends no `ingestion`, connection association or idempotency-key
