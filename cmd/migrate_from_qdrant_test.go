@@ -3,9 +3,13 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/lambdadb/lambdadb-migration/internal/config"
@@ -285,4 +289,73 @@ func emptyInventory() *source.Inventory {
 
 func testBoolPtr(value bool) *bool {
 	return &value
+}
+
+// Unsupported source vectors must fail mapping validation before any LambdaDB
+// request or source read, including dry runs.
+func TestRunMigrationRejectsUnsupportedVectorsBeforeLambdaDB(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		kind   string
+		vector source.VectorField
+		want   string
+	}{
+		{"qdrant_dot", "qdrant", source.VectorField{Name: "dense", Dimensions: 64, Similarity: "dot_product", SourceSimilarity: "Dot"},
+			`vector "<unnamed>" uses unsupported similarity "dot_product" (source qdrant metric "Dot"); LambdaDB supports cosine, euclidean`},
+		{"pinecone_dotproduct", "pinecone", source.VectorField{Name: "dense", Dimensions: 64, Similarity: "dot_product", SourceSimilarity: "dotproduct"},
+			`vector "<unnamed>" uses unsupported similarity "dot_product" (source pinecone metric "dotproduct"); LambdaDB supports cosine, euclidean`},
+		{"elasticsearch_max_inner_product", "elasticsearch", source.VectorField{Name: "dense", Dimensions: 64, Similarity: "max_inner_product", SourceSimilarity: "max_inner_product"},
+			`vector "<unnamed>" uses unsupported similarity "max_inner_product" (source elasticsearch metric "max_inner_product"); LambdaDB supports cosine, euclidean`},
+		{"small_dimensions", "qdrant", source.VectorField{Name: "dense", Dimensions: 32, Similarity: "cosine", SourceSimilarity: "Cosine"},
+			`vector "<unnamed>" dimensions 32 are below LambdaDB minimum 64`},
+	} {
+		for _, dryRun := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/dry_run=%t", tt.name, dryRun), func(t *testing.T) {
+				var requests atomic.Int32
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					requests.Add(1)
+					t.Errorf("unexpected LambdaDB request %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusInternalServerError)
+				}))
+				defer server.Close()
+				src := &vectorSource{kind: tt.kind, vector: tt.vector}
+				cfg := checkpointRunConfig(src, server.URL, t.TempDir())
+				cfg.SourceKind = tt.kind
+				cfg.Migration.CreateCollection = testBoolPtr(true)
+				cfg.Migration.DryRun = dryRun
+
+				err := RunMigration(context.Background(), cfg)
+				if err == nil || !strings.Contains(err.Error(), tt.want) {
+					t.Fatalf("RunMigration() error = %v, want it to contain %q", err, tt.want)
+				}
+				if got := requests.Load(); got != 0 {
+					t.Fatalf("LambdaDB requests = %d, want 0", got)
+				}
+				if src.reads != 0 {
+					t.Fatalf("source reads = %d, want 0", src.reads)
+				}
+			})
+		}
+	}
+}
+
+type vectorSource struct {
+	kind   string
+	vector source.VectorField
+	reads  int
+}
+
+func (s *vectorSource) Name() string                          { return s.kind }
+func (s *vectorSource) Count(context.Context) (uint64, error) { return 1, nil }
+func (s *vectorSource) Inventory(context.Context) (*source.Inventory, error) {
+	return &source.Inventory{
+		SourceKind:     s.kind,
+		CollectionName: "source",
+		RecordCount:    1,
+		Vectors:        map[string]source.VectorField{"": s.vector},
+	}, nil
+}
+func (s *vectorSource) Read(context.Context, source.Cursor, int) (source.Batch, error) {
+	s.reads++
+	return source.Batch{Done: true}, nil
 }

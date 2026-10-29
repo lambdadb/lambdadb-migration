@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,6 +29,7 @@ const fixtureLiveFlag = "LAMBDADB_MIGRATION_RUN_FIXTURE_LIVE_E2E"
 // Elasticsearch-shaped fixtures through the CLI migration pipeline into a real
 // LambdaDB project. It verifies each collection's schema, document count, and
 // document content, then deletes the collection and verifies its absence.
+// Cases with wantErr must fail mapping validation without creating a collection.
 func TestFixtureSourcesToLambdaDBLive(t *testing.T) {
 	if !envEnabled(fixtureLiveFlag) {
 		t.Skip("set " + fixtureLiveFlag + "=1 with LAMBDADB_BASE_URL, LAMBDADB_PROJECT_NAME, and LAMBDADB_PROJECT_API_KEY")
@@ -62,6 +64,7 @@ func TestFixtureSourcesToLambdaDBLive(t *testing.T) {
 		queryOverlap bool
 		wantIndexes  map[string]map[string]any
 		wantDocs     map[string]map[string]any
+		wantErr      string
 	}{
 		{
 			name:         "qdrant_unnamed_dense_upsert",
@@ -147,7 +150,7 @@ func TestFixtureSourcesToLambdaDBLive(t *testing.T) {
 		{
 			name:         "pinecone_dense_upsert",
 			slug:         "pdns",
-			source:       pineconeFixtureSource(t, "dense", pineconeDenseSmokeVectors(t), &source.VectorField{Name: "dense", Dimensions: fixtureVectorDims, Similarity: "cosine"}),
+			source:       pineconeFixtureSource(t, "dense", pineconeDenseSmokeVectors(t), &source.VectorField{Name: "dense", Dimensions: fixtureVectorDims, Similarity: "cosine", SourceSimilarity: "cosine"}),
 			writeMode:    config.WriteModeUpsert,
 			batchSize:    2,
 			queryOverlap: true,
@@ -156,6 +159,14 @@ func TestFixtureSourcesToLambdaDBLive(t *testing.T) {
 				"pc-1": {"id": "pc-1", "title": "Pinecone document 1", "metadata_url": "https://example.com/pinecone-1", "rank": 1.0, "dense": padded(0.1, 0.2, 0.3)},
 				"pc-2": {"id": "pc-2", "title": "Pinecone document 2", "metadata_url": "https://example.com/pinecone-2", "rank": 2.0, "dense": padded(0.2, 0.1, 0.4)},
 			},
+		},
+		{
+			name:      "pinecone_dotproduct_rejected",
+			slug:      "pdot",
+			source:    pineconeFixtureSource(t, "dotproduct", pineconeDenseSmokeVectors(t), &source.VectorField{Name: "dense", Dimensions: fixtureVectorDims, Similarity: "dot_product", SourceSimilarity: "dotproduct"}),
+			writeMode: config.WriteModeUpsert,
+			batchSize: 2,
+			wantErr:   `uses unsupported similarity "dot_product" (source pinecone metric "dotproduct"); LambdaDB supports cosine, euclidean`,
 		},
 		{
 			name:         "pinecone_sparse_upsert",
@@ -242,6 +253,17 @@ func TestFixtureSourcesToLambdaDBLive(t *testing.T) {
 				},
 				MappingFile: mappingFile,
 			})
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("RunMigration() error = %v, want it to contain %q", err, tt.wantErr)
+				}
+				_, err := client.Collection(collection).Get(ctx)
+				var notFound *apierrors.ResourceNotFoundError
+				if !errors.As(err, &notFound) {
+					t.Fatalf("get LambdaDB collection after rejected migration: error = %v, want not found", err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("RunMigration() error = %v", err)
 			}

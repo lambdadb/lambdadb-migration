@@ -368,6 +368,48 @@ Local migration checkpoints are stored in the directory where you ran the migrat
 rm -rf .lambdadb-migration
 ```
 
+## Vector Similarity Mapping
+
+LambdaDB vector fields with caller-provided values accept only `cosine` and
+`euclidean` similarity and 64 to 4096 dimensions. Inventory maps source metrics
+as follows:
+
+| Source | Source metric | Generated `similarity` | Result |
+| :-- | :-- | :-- | :-- |
+| Qdrant | `Cosine` | `cosine` | Supported |
+| Qdrant | `Euclid` | `euclidean` | Supported |
+| Qdrant | `Dot` | `dot_product` | Rejected |
+| Qdrant | `Manhattan` | `unsupported:manhattan` | Rejected |
+| Pinecone | `cosine` | `cosine` | Supported |
+| Pinecone | `euclidean` | `euclidean` | Supported |
+| Pinecone | `dotproduct` (dense index) | `dot_product` | Rejected |
+| Elasticsearch | `cosine` or omitted | `cosine` | Supported |
+| Elasticsearch | `l2_norm` | `euclidean` | Supported |
+| Elasticsearch | `dot_product` | `dot_product` | Rejected |
+| Elasticsearch | `max_inner_product` | `max_inner_product` | Rejected |
+
+Pinecone sparse indexes use `dotproduct` and migrate to LambdaDB sparse vector
+fields, which have no similarity setting.
+
+`inventory` still reports the source as it is: each vector lists the generated
+`similarity` and the original `sourceSimilarity`, and `warnings` names every
+vector whose metric or dimensions LambdaDB cannot store. Migration runs,
+including `--migration.dry-run`, validate the mapping before any LambdaDB request
+and exit with an error such as:
+
+```text
+error: vector "<unnamed>" uses unsupported similarity "dot_product" (source qdrant metric "Dot"); LambdaDB supports cosine, euclidean. Set a supported similarity in a mapping file only if it preserves the source ranking for your vectors
+```
+
+The CLI never converts a similarity on its own. To migrate such a vector, edit
+`vectors.<source vector>.similarity` in the mapping file to `cosine` or
+`euclidean` and pass it with `--mapping-file`. Choose this only when it keeps the
+ranking you need. For example, dot product and cosine rank unit-length vectors
+identically, but they rank vectors of differing lengths differently. Validation
+also rejects vector dimensions below 64 or above 4096, and native embedding
+mappings whose `embedding.similarity` or `embedding.dimensions` fall outside these
+limits.
+
 ## Mapping Examples
 
 For named vectors, generate an inventory first and review the generated `vectors` mapping:
@@ -381,7 +423,7 @@ vectors:
   body_dense:
     targetField: body_dense
     dimensions: 768
-    similarity: dot_product
+    similarity: euclidean
 ```
 
 For hybrid-style dense plus sparse data, keep both vector mappings and indexed payload fields explicit:
@@ -608,8 +650,10 @@ an Elasticsearch index with analyzer-backed text, keyword, numeric, date,
 boolean, and `dense_vector` fields. Each case runs the CLI migration pipeline
 into a temporary collection in a real LambdaDB project, checks the validation
 report, the collection schema, every document's content, and `numDocs`, then
-deletes the collection and verifies that it is gone. Vector fixtures use 64
-dimensions, the LambdaDB minimum.
+deletes the collection and verifies that it is gone. The
+`pinecone_dotproduct_rejected` case instead requires mapping validation to fail
+and checks that no collection was created. Vector fixtures use 64 dimensions,
+the LambdaDB minimum.
 
 Run it locally against a project where temporary collections may be created
 and deleted:

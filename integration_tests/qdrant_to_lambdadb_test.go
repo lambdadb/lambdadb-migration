@@ -143,9 +143,16 @@ func TestQdrantToLambdaDBMockIntegration(t *testing.T) {
 			},
 		},
 		{
-			name:    "manhattan_distance_rejected",
-			fixture: manhattanFixture(),
-			wantErr: `unsupported similarity "unsupported:manhattan"`,
+			name:       "manhattan_distance_rejected",
+			fixture:    distanceFixture(qdrantapi.Distance_Manhattan),
+			wantErr:    `uses unsupported similarity "unsupported:manhattan" (source qdrant metric "Manhattan")`,
+			assertMock: requireNoLambdaDBWrites,
+		},
+		{
+			name:       "dot_distance_rejected",
+			fixture:    distanceFixture(qdrantapi.Distance_Dot),
+			wantErr:    `uses unsupported similarity "dot_product" (source qdrant metric "Dot"); LambdaDB supports cosine, euclidean`,
+			assertMock: requireNoLambdaDBWrites,
 		},
 		{
 			name:    "multi_vector_rejected",
@@ -199,6 +206,9 @@ func TestQdrantToLambdaDBMockIntegration(t *testing.T) {
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("migration Run() error = %v, want containing %q", err, tt.wantErr)
+				}
+				if tt.assertMock != nil {
+					tt.assertMock(t, mock)
 				}
 				return
 			}
@@ -414,33 +424,41 @@ func denseSparsePayloadIndexFixture() qdrantFixture {
 	}
 }
 
-func manhattanFixture() qdrantFixture {
+// distanceFixture uses a Qdrant distance that LambdaDB cannot store.
+func distanceFixture(distance qdrantapi.Distance) qdrantFixture {
 	return qdrantFixture{
 		vectorsConfig: qdrantapi.NewVectorsConfig(&qdrantapi.VectorParams{
-			Size:     2,
-			Distance: qdrantapi.Distance_Manhattan,
+			Size:     fixtureVectorDims,
+			Distance: distance,
 		}),
 		points: []*qdrantapi.PointStruct{
 			{
 				Id:      qdrantapi.NewIDNum(301),
-				Vectors: qdrantapi.NewVectors(0.1, 0.2),
-				Payload: qdrantapi.NewValueMap(map[string]any{"title": "manhattan"}),
+				Vectors: qdrantapi.NewVectorsDense(fixtureVector(0.1, 0.2)),
+				Payload: qdrantapi.NewValueMap(map[string]any{"title": distance.String()}),
 			},
 		},
+	}
+}
+
+func requireNoLambdaDBWrites(t *testing.T, mock *lambdaDBMock) {
+	t.Helper()
+	if creates, docs := mock.creates(), mock.docs(); len(creates) != 0 || len(docs) != 0 {
+		t.Fatalf("LambdaDB mock creates = %v, docs = %v, want none", creates, docs)
 	}
 }
 
 func multiVectorFixture() qdrantFixture {
 	return qdrantFixture{
 		vectorsConfig: qdrantapi.NewVectorsConfig(&qdrantapi.VectorParams{
-			Size:              2,
+			Size:              fixtureVectorDims,
 			Distance:          qdrantapi.Distance_Cosine,
 			MultivectorConfig: &qdrantapi.MultiVectorConfig{Comparator: qdrantapi.MultiVectorComparator_MaxSim},
 		}),
 		points: []*qdrantapi.PointStruct{
 			{
 				Id:      qdrantapi.NewIDNum(401),
-				Vectors: qdrantapi.NewVectorsMulti([][]float32{{0.1, 0.2}, {0.3, 0.4}}),
+				Vectors: qdrantapi.NewVectorsMulti([][]float32{fixtureVector(0.1, 0.2), fixtureVector(0.3, 0.4)}),
 				Payload: qdrantapi.NewValueMap(map[string]any{"title": "multi"}),
 			},
 		},

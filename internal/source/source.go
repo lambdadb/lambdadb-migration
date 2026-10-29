@@ -37,7 +37,11 @@ type Inventory struct {
 type VectorField struct {
 	Name       string `json:"name" yaml:"name"`
 	Dimensions int64  `json:"dimensions" yaml:"dimensions"`
+	// Similarity is the LambdaDB name for the source metric. It can name a
+	// metric that LambdaDB does not support; mapping validation rejects those.
 	Similarity string `json:"similarity" yaml:"similarity"`
+	// SourceSimilarity is the metric as the source reports it, such as Qdrant "Dot".
+	SourceSimilarity string `json:"sourceSimilarity,omitempty" yaml:"sourceSimilarity,omitempty"`
 }
 
 type SparseVectorField struct {

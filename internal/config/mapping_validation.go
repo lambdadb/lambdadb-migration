@@ -8,7 +8,14 @@ import (
 	"github.com/lambdadb/lambdadb-migration/internal/source"
 )
 
-const MaxLambdaDBVectorDimensions int64 = 4096
+// Vector limits of the LambdaDB API contract for caller-provided vectors.
+const (
+	MinLambdaDBVectorDimensions int64 = 64
+	MaxLambdaDBVectorDimensions int64 = 4096
+)
+
+// supportedSimilarities are the vector similarities LambdaDB accepts.
+const supportedSimilarities = "cosine, euclidean"
 
 func ValidateMapping(inv *source.Inventory, mapping MappingConfig, targetCollection string, writeMode WriteMode) error {
 	var errs []error
@@ -30,7 +37,7 @@ func ValidateMapping(inv *source.Inventory, mapping MappingConfig, targetCollect
 
 	errs = append(errs, validateIDMapping(mapping.IDs, fields)...)
 	if inv != nil {
-		errs = append(errs, validateVectorMappings(inv.Vectors, mapping.Vectors, fields)...)
+		errs = append(errs, validateVectorMappings(inv.SourceKind, inv.Vectors, mapping.Vectors, fields)...)
 		errs = append(errs, validateSparseVectorMappings(inv.SparseVectors, mapping.SparseVectors, fields)...)
 	}
 	errs = append(errs, validatePayloadMapping(inv, mapping.Payload, fields)...)
@@ -57,7 +64,7 @@ func validateIDMapping(ids IDMapping, fields *fieldRegistry) []error {
 	return errs
 }
 
-func validateVectorMappings(inventory map[string]source.VectorField, mappings map[string]VectorMapping, fields *fieldRegistry) []error {
+func validateVectorMappings(sourceKind string, inventory map[string]source.VectorField, mappings map[string]VectorMapping, fields *fieldRegistry) []error {
 	var errs []error
 	for sourceName, vector := range inventory {
 		mapping, ok := mappings[sourceName]
@@ -65,7 +72,7 @@ func validateVectorMappings(inventory map[string]source.VectorField, mappings ma
 			errs = append(errs, fmt.Errorf("missing vector mapping for source vector %q", displaySourceField(sourceName)))
 			continue
 		}
-		errs = append(errs, validateVectorMapping(sourceName, vector, mapping)...)
+		errs = append(errs, validateVectorMapping(sourceKind, sourceName, vector, mapping)...)
 		if mapping.TargetField != "" && !strings.Contains(mapping.TargetField, ".") {
 			errs = append(errs, fields.add(mapping.TargetField, fmt.Sprintf("vector %q", displaySourceField(sourceName)))...)
 		}
@@ -78,7 +85,7 @@ func validateVectorMappings(inventory map[string]source.VectorField, mappings ma
 	return errs
 }
 
-func validateVectorMapping(sourceName string, vector source.VectorField, mapping VectorMapping) []error {
+func validateVectorMapping(sourceKind, sourceName string, vector source.VectorField, mapping VectorMapping) []error {
 	var errs []error
 	name := displaySourceField(sourceName)
 	if mapping.TargetField == "" {
@@ -88,6 +95,8 @@ func validateVectorMapping(sourceName string, vector source.VectorField, mapping
 	}
 	if mapping.Dimensions < 1 {
 		errs = append(errs, fmt.Errorf("vector %q dimensions must be greater than 0", name))
+	} else if mapping.Dimensions < MinLambdaDBVectorDimensions {
+		errs = append(errs, fmt.Errorf("vector %q dimensions %d are below LambdaDB minimum %d", name, mapping.Dimensions, MinLambdaDBVectorDimensions))
 	} else if mapping.Dimensions > MaxLambdaDBVectorDimensions {
 		errs = append(errs, fmt.Errorf("vector %q dimensions %d exceed LambdaDB limit %d", name, mapping.Dimensions, MaxLambdaDBVectorDimensions))
 	}
@@ -95,9 +104,30 @@ func validateVectorMapping(sourceName string, vector source.VectorField, mapping
 		errs = append(errs, fmt.Errorf("vector %q dimensions %d do not match source dimensions %d", name, mapping.Dimensions, vector.Dimensions))
 	}
 	if !isSupportedSimilarity(mapping.Similarity) {
-		errs = append(errs, fmt.Errorf("vector %q uses unsupported similarity %q", name, mapping.Similarity))
+		origin := ""
+		if mapping.Similarity == vector.Similarity && vector.SourceSimilarity != "" {
+			origin = fmt.Sprintf(" (source %s metric %q)", sourceKind, vector.SourceSimilarity)
+		}
+		errs = append(errs, fmt.Errorf("vector %q uses unsupported similarity %q%s; LambdaDB supports %s. Set a supported similarity in a mapping file only if it preserves the source ranking for your vectors", name, mapping.Similarity, origin, supportedSimilarities))
 	}
 	return errs
+}
+
+// VectorFieldWarnings reports source vector properties that LambdaDB cannot
+// store as-is. Inventory output includes them; mapping validation rejects them.
+func VectorFieldWarnings(sourceKind, fieldName string, vector source.VectorField) []string {
+	var warnings []string
+	if !isSupportedSimilarity(vector.Similarity) {
+		metric := vector.SourceSimilarity
+		if metric == "" {
+			metric = vector.Similarity
+		}
+		warnings = append(warnings, fmt.Sprintf("vector %q uses %s metric %q, which LambdaDB does not support (supported: %s); migration validation fails unless the mapping sets a supported similarity", fieldName, sourceKind, metric, supportedSimilarities))
+	}
+	if vector.Dimensions > 0 && (vector.Dimensions < MinLambdaDBVectorDimensions || vector.Dimensions > MaxLambdaDBVectorDimensions) {
+		warnings = append(warnings, fmt.Sprintf("vector %q has %d dimensions, outside the LambdaDB range %d-%d; migration validation fails", fieldName, vector.Dimensions, MinLambdaDBVectorDimensions, MaxLambdaDBVectorDimensions))
+	}
+	return warnings
 }
 
 func validateSparseVectorMappings(inventory map[string]source.SparseVectorField, mappings map[string]SparseVectorMapping, fields *fieldRegistry) []error {
@@ -171,7 +201,7 @@ func validatePayloadMapping(inv *source.Inventory, payload PayloadMapping, field
 
 func isSupportedSimilarity(value string) bool {
 	switch value {
-	case "", "cosine", "euclidean", "dot_product", "max_inner_product":
+	case "", "cosine", "euclidean":
 		return true
 	default:
 		return false

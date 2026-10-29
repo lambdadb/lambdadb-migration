@@ -1,6 +1,7 @@
 package pinecone
 
 import (
+	"reflect"
 	"testing"
 
 	pineconeapi "github.com/pinecone-io/go-pinecone/v5/pinecone"
@@ -15,12 +16,37 @@ func TestAddVectorConfigDense(t *testing.T) {
 	addVectorConfig(inv, &pineconeapi.Index{
 		VectorType: "dense",
 		Dimension:  &dim,
+		Metric:     pineconeapi.Cosine,
+	})
+
+	want := source.VectorField{Name: "dense", Dimensions: 1536, Similarity: "cosine", SourceSimilarity: "cosine"}
+	if vector := inv.Vectors[""]; vector != want {
+		t.Fatalf("dense vector = %#v, want %#v", vector, want)
+	}
+	if len(inv.Warnings) != 0 {
+		t.Fatalf("warnings = %q, want none", inv.Warnings)
+	}
+}
+
+// Inventory keeps reporting a dotproduct index and warns that LambdaDB cannot
+// create it; mapping validation then rejects the generated mapping.
+func TestAddVectorConfigDenseDotproductWarns(t *testing.T) {
+	dim := int32(1536)
+	inv := emptyInventory()
+
+	addVectorConfig(inv, &pineconeapi.Index{
+		VectorType: "dense",
+		Dimension:  &dim,
 		Metric:     pineconeapi.Dotproduct,
 	})
 
-	vector := inv.Vectors[""]
-	if vector.Name != "dense" || vector.Dimensions != 1536 || vector.Similarity != "dot_product" {
-		t.Fatalf("dense vector = %#v", vector)
+	want := source.VectorField{Name: "dense", Dimensions: 1536, Similarity: "dot_product", SourceSimilarity: "dotproduct"}
+	if vector := inv.Vectors[""]; vector != want {
+		t.Fatalf("dense vector = %#v, want %#v", vector, want)
+	}
+	wantWarnings := []string{`vector "dense" uses Pinecone metric "dotproduct", which LambdaDB does not support (supported: cosine, euclidean); migration validation fails unless the mapping sets a supported similarity`}
+	if !reflect.DeepEqual(inv.Warnings, wantWarnings) {
+		t.Fatalf("warnings = %q, want %q", inv.Warnings, wantWarnings)
 	}
 }
 

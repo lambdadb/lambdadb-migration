@@ -47,5 +47,15 @@ func ParseEmbeddingIndexConfig(index map[string]any) (components.IndexConfigsUni
 		sort.Strings(unsupported)
 		return components.IndexConfigsUnion{}, fmt.Errorf("unsupported embedding index options %v", unsupported)
 	}
+	embeddingConfig := union.IndexConfigsNativeEmbeddingVector.GetEmbedding()
+	if union.IndexConfigsManagedEmbeddingVector != nil {
+		embeddingConfig = union.IndexConfigsManagedEmbeddingVector.GetEmbedding()
+	}
+	if similarity := embeddingConfig.GetSimilarity(); similarity != nil && !isSupportedSimilarity(string(*similarity)) {
+		return components.IndexConfigsUnion{}, fmt.Errorf("unsupported embedding similarity %q; LambdaDB supports %s", *similarity, supportedSimilarities)
+	}
+	if dimensions := embeddingConfig.GetDimensions(); dimensions != nil && (*dimensions < MinLambdaDBVectorDimensions || *dimensions > MaxLambdaDBVectorDimensions) {
+		return components.IndexConfigsUnion{}, fmt.Errorf("embedding dimensions %d are outside the LambdaDB range %d-%d", *dimensions, MinLambdaDBVectorDimensions, MaxLambdaDBVectorDimensions)
+	}
 	return union, nil
 }

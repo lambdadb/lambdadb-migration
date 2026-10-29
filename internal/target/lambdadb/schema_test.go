@@ -1,6 +1,7 @@
 package lambdadb
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/lambdadb/go-lambdadb/models/components"
@@ -60,17 +61,19 @@ func TestBuildIndexConfigs(t *testing.T) {
 	}
 }
 
-func TestBuildIndexConfigsRejectsManhattan(t *testing.T) {
-	_, err := buildIndexConfigs(config.MappingConfig{
-		Vectors: map[string]config.VectorMapping{
-			"": {
-				TargetField: "dense",
-				Dimensions:  1536,
-				Similarity:  "unsupported:manhattan",
-			},
-		},
-	})
-	if err == nil {
-		t.Fatal("buildIndexConfigs() error = nil, want error")
+// The LambdaDB API accepts only cosine and euclidean, although the SDK keeps
+// constants for dot_product and max_inner_product.
+func TestBuildIndexConfigsRejectsUnsupportedSimilarities(t *testing.T) {
+	for _, similarity := range []string{"dot_product", "max_inner_product", "unsupported:manhattan", "unknown"} {
+		t.Run(similarity, func(t *testing.T) {
+			_, err := buildIndexConfigs(config.MappingConfig{
+				Vectors: map[string]config.VectorMapping{
+					"": {TargetField: "dense", Dimensions: 1536, Similarity: similarity},
+				},
+			})
+			if err == nil || !strings.Contains(err.Error(), "LambdaDB supports cosine, euclidean") {
+				t.Fatalf("buildIndexConfigs() error = %v, want unsupported similarity", err)
+			}
+		})
 	}
 }
