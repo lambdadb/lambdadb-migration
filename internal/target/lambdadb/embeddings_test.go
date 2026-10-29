@@ -28,7 +28,7 @@ func TestEmbeddingMappingToCollectionWire(t *testing.T) {
 	for _, raw := range []string{
 		nativeIndexJSON, legacyIndexJSON, normalizedIndexJSON,
 		`{"embedding":{"dimensions":256,"model":"text-embedding-3-small","provider":"openai","sourceField":"body"},"type":"vector"}`,
-		`{"embedding":{"dimensions":256,"model":"text-embedding-3-small","provider":"openai","similarity":"dot_product","sourceField":"body"},"type":"vector"}`,
+		`{"embedding":{"dimensions":256,"model":"text-embedding-3-small","provider":"openai","similarity":"euclidean","sourceField":"body"},"type":"vector"}`,
 	} {
 		for _, format := range []string{"json", "yaml"} {
 			t.Run(raw+"/"+format, func(t *testing.T) {
@@ -110,6 +110,10 @@ func TestEmbeddingValidationAndSchemaErrors(t *testing.T) {
 		{"unknown option", `{"extra":true}`, "unsupported embedding index options [extra]"},
 		{"unknown embedding option", `{"embedding":{"provider":"openai","model":"text-embedding-3-small","sourceField":"body","extra":true}}`, "unsupported embedding index options [embedding.extra]"},
 		{"fractional dimensions", `{"embedding":{"provider":"openai","model":"text-embedding-3-small","sourceField":"body","dimensions":1.5}}`, "int64"},
+		{"dot product similarity", `{"embedding":{"provider":"openai","model":"text-embedding-3-small","sourceField":"body","similarity":"dot_product"}}`, `unsupported embedding similarity "dot_product"; LambdaDB supports cosine, euclidean`},
+		{"max inner product similarity", `{"embedding":{"provider":"openai","model":"text-embedding-3-small","sourceField":"body","similarity":"max_inner_product"}}`, `unsupported embedding similarity "max_inner_product"`},
+		{"dimensions below minimum", `{"embedding":{"provider":"openai","model":"text-embedding-3-small","sourceField":"body","dimensions":32}}`, "embedding dimensions 32 are outside the LambdaDB range 64-4096"},
+		{"dimensions above maximum", `{"embedding":{"provider":"openai","model":"text-embedding-3-small","sourceField":"body","dimensions":8192}}`, "embedding dimensions 8192 are outside the LambdaDB range 64-4096"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var index map[string]any
@@ -181,7 +185,7 @@ func TestNormalizedEmbeddingMetadataDoesNotUpdateCollection(t *testing.T) {
 }
 
 func TestMigrationWritesPreserveVectorsAndText(t *testing.T) {
-	inv := &source.Inventory{CollectionName: "source", Vectors: map[string]source.VectorField{"stored": {Name: "stored", Dimensions: 3, Similarity: "cosine"}}}
+	inv := &source.Inventory{CollectionName: "source", Vectors: map[string]source.VectorField{"stored": {Name: "stored", Dimensions: 64, Similarity: "cosine"}}}
 	mapping := config.MappingFromInventory(inv, "articles")
 	// Native generation is explicitly requested for a separate destination field.
 	var index map[string]any
@@ -246,7 +250,7 @@ func TestMigrationWritesPreserveVectorsAndText(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := json.Marshal(configs["stored"])
-	if string(raw) != `{"dimensions":3,"similarity":"cosine","type":"vector"}` {
+	if string(raw) != `{"dimensions":64,"similarity":"cosine","type":"vector"}` {
 		t.Fatalf("generated inventory changed stored vector contract: %s", raw)
 	}
 }

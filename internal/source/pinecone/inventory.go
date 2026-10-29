@@ -6,6 +6,7 @@ import (
 
 	pineconeapi "github.com/pinecone-io/go-pinecone/v5/pinecone"
 
+	"github.com/lambdadb/lambdadb-migration/internal/config"
 	"github.com/lambdadb/lambdadb-migration/internal/source"
 )
 
@@ -51,21 +52,24 @@ func addVectorConfig(inv *source.Inventory, index *pineconeapi.Index) {
 			inv.Warnings = append(inv.Warnings, "Pinecone dense index did not report a dimension")
 			return
 		}
-		inv.Vectors[""] = source.VectorField{
-			Name:       "dense",
-			Dimensions: int64(*index.Dimension),
-			Similarity: mapMetric(index.Metric),
-		}
+		addDenseVector(inv, index)
 	default:
 		inv.Warnings = append(inv.Warnings, fmt.Sprintf("unknown Pinecone vector type %q", index.VectorType))
 		if index.Dimension != nil {
-			inv.Vectors[""] = source.VectorField{
-				Name:       "dense",
-				Dimensions: int64(*index.Dimension),
-				Similarity: mapMetric(index.Metric),
-			}
+			addDenseVector(inv, index)
 		}
 	}
+}
+
+func addDenseVector(inv *source.Inventory, index *pineconeapi.Index) {
+	vector := source.VectorField{
+		Name:             "dense",
+		Dimensions:       int64(*index.Dimension),
+		Similarity:       mapMetric(index.Metric),
+		SourceSimilarity: string(index.Metric),
+	}
+	inv.Vectors[""] = vector
+	inv.Warnings = append(inv.Warnings, config.VectorFieldWarnings("Pinecone", vector.Name, vector)...)
 }
 
 func mapMetric(metric pineconeapi.IndexMetric) string {

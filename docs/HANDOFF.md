@@ -41,9 +41,11 @@ See README "Live Smoke Gates" for local commands.
 Server constraints found while adding the suite: vector dimensions must be 64
 to 4096, so fixture vectors are zero-padded to 64 dimensions; similarity must be
 `cosine` or `euclidean`, so the named-vector fixture uses Qdrant `Euclid` instead
-of `Dot`. The CLI still maps Qdrant `Dot`, Pinecone `dotproduct`, and
-Elasticsearch `dot_product`/`max_inner_product` to similarities the server
-rejects at collection creation. The real-source tests stay manual.
+of `Dot`. Mapping validation now rejects Qdrant `Dot`/`Manhattan`, Pinecone
+`dotproduct`, and Elasticsearch `dot_product`/`max_inner_product`, and vector
+dimensions outside 64 to 4096, before any LambdaDB request; inventory reports
+them as warnings. The `pinecone_dotproduct_rejected` live case checks that no
+collection is created. The real-source tests stay manual.
 
 ## LambdaDB Contract Alignment (2026-09-16)
 
@@ -254,8 +256,8 @@ Implemented in `internal/config`:
 
 - target collection matches the CLI target collection
 - dense and sparse vector mappings exist for inventory fields
-- vector dimensions are positive, match source dimensions, and stay within LambdaDB's 4,096 dimension limit
-- vector similarities are supported before LambdaDB collection creation
+- vector dimensions match source dimensions and stay within LambdaDB's 64 to 4,096 dimension range
+- vector similarities are `cosine` or `euclidean` before LambdaDB collection creation; errors name the source vector and its source metric
 - payload index types and text analyzers are supported
 - target field names in the mapping do not contain dots
 - id, vector, sparse-vector, payload, and payload-index target fields do not collide

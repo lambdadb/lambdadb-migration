@@ -1,6 +1,8 @@
 package config
 
 import (
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -47,6 +49,93 @@ func TestValidateMappingRejectsInvalidVectorDetails(t *testing.T) {
 	assertErrorContains(t, err, `uses unsupported similarity "unsupported:manhattan"`)
 }
 
+func TestValidateMappingRejectsUnsupportedSourceSimilarity(t *testing.T) {
+	for _, tt := range []struct {
+		sourceKind, similarity, sourceSimilarity string
+	}{
+		{"qdrant", "dot_product", "Dot"},
+		{"qdrant", "unsupported:manhattan", "Manhattan"},
+		{"pinecone", "dot_product", "dotproduct"},
+		{"elasticsearch", "dot_product", "dot_product"},
+		{"elasticsearch", "max_inner_product", "max_inner_product"},
+	} {
+		t.Run(tt.sourceKind+"/"+tt.sourceSimilarity, func(t *testing.T) {
+			inv := validationInventory()
+			inv.SourceKind = tt.sourceKind
+			inv.Vectors["title_dense"] = source.VectorField{Name: "title_dense", Dimensions: 768, Similarity: tt.similarity, SourceSimilarity: tt.sourceSimilarity}
+			mapping := MappingFromInventory(inv, "articles")
+
+			err := ValidateMapping(inv, mapping, "articles", WriteModeBulk)
+			assertErrorContains(t, err, fmt.Sprintf(`vector "title_dense" uses unsupported similarity %q (source %s metric %q); LambdaDB supports cosine, euclidean.`, tt.similarity, tt.sourceKind, tt.sourceSimilarity))
+		})
+	}
+}
+
+// A mapping file can choose a supported similarity explicitly; the generated
+// mapping never does so on its own.
+func TestValidateMappingAcceptsExplicitSupportedSimilarity(t *testing.T) {
+	inv := validationInventory()
+	inv.Vectors["title_dense"] = source.VectorField{Name: "title_dense", Dimensions: 768, Similarity: "dot_product", SourceSimilarity: "Dot"}
+	mapping := MappingFromInventory(inv, "articles")
+	if got := mapping.Vectors["title_dense"].Similarity; got != "dot_product" {
+		t.Fatalf("generated similarity = %q, want source similarity dot_product", got)
+	}
+	mapping.Vectors["title_dense"] = VectorMapping{TargetField: "title_dense", Dimensions: 768, Similarity: "cosine"}
+
+	if err := ValidateMapping(inv, mapping, "articles", WriteModeBulk); err != nil {
+		t.Fatalf("ValidateMapping() error = %v", err)
+	}
+}
+
+func TestValidateMappingVectorDimensionBounds(t *testing.T) {
+	for _, tt := range []struct {
+		dimensions int64
+		want       string
+	}{
+		{63, `vector "title_dense" dimensions 63 are below LambdaDB minimum 64`},
+		{64, ""},
+		{4096, ""},
+		{4097, `vector "title_dense" dimensions 4097 exceed LambdaDB limit 4096`},
+	} {
+		t.Run(fmt.Sprint(tt.dimensions), func(t *testing.T) {
+			inv := validationInventory()
+			inv.Vectors["title_dense"] = source.VectorField{Name: "title_dense", Dimensions: tt.dimensions, Similarity: "cosine"}
+			err := ValidateMapping(inv, MappingFromInventory(inv, "articles"), "articles", WriteModeBulk)
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("ValidateMapping() error = %v", err)
+				}
+				return
+			}
+			assertErrorContains(t, err, tt.want)
+		})
+	}
+}
+
+func TestVectorFieldWarnings(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		vector source.VectorField
+		want   []string
+	}{
+		{"supported", source.VectorField{Dimensions: 768, Similarity: "cosine", SourceSimilarity: "Cosine"}, nil},
+		{"dot product", source.VectorField{Dimensions: 768, Similarity: "dot_product", SourceSimilarity: "Dot"}, []string{
+			`vector "dense" uses Qdrant metric "Dot", which LambdaDB does not support (supported: cosine, euclidean); migration validation fails unless the mapping sets a supported similarity`,
+		}},
+		{"unreported dimensions", source.VectorField{Similarity: "cosine"}, nil},
+		{"small dimensions and unknown metric", source.VectorField{Dimensions: 3, Similarity: "unknown"}, []string{
+			`vector "dense" uses Qdrant metric "unknown", which LambdaDB does not support (supported: cosine, euclidean); migration validation fails unless the mapping sets a supported similarity`,
+			`vector "dense" has 3 dimensions, outside the LambdaDB range 64-4096; migration validation fails`,
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := VectorFieldWarnings("Qdrant", "dense", tt.vector); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("VectorFieldWarnings() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestValidateMappingRejectsInvalidPayloadIndex(t *testing.T) {
 	inv := validationInventory()
 	mapping := MappingFromInventory(inv, "articles")
@@ -86,7 +175,7 @@ func validationInventory() *source.Inventory {
 			"title_dense": {
 				Name:       "title_dense",
 				Dimensions: 768,
-				Similarity: "dot_product",
+				Similarity: "euclidean",
 			},
 		},
 		SparseVectors: map[string]source.SparseVectorField{

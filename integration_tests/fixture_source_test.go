@@ -152,7 +152,7 @@ func qdrantFixtureSource(collection string, fixture qdrantFixture) *fixtureSourc
 			qdrantapi.Distance_Dot:       "dot_product",
 			qdrantapi.Distance_Manhattan: "unsupported:manhattan",
 		}[params.GetDistance()]
-		inv.Vectors[name] = source.VectorField{Name: fieldName, Dimensions: int64(params.GetSize()), Similarity: similarity}
+		inv.Vectors[name] = source.VectorField{Name: fieldName, Dimensions: int64(params.GetSize()), Similarity: similarity, SourceSimilarity: params.GetDistance().String()}
 	}
 	if params := fixture.vectorsConfig.GetParams(); params != nil {
 		addQdrantVector("", params)
@@ -295,7 +295,7 @@ func pineconeFixtureSource(t *testing.T, index string, vectors []*pineconeapi.Ve
 // as json.Number, and dense_vector values are returned as named vectors.
 func elasticsearchTextAnalyzerFixture(index string) *fixtureSource {
 	inv := newInventory("elasticsearch", index)
-	inv.Vectors["embedding"] = source.VectorField{Name: "embedding", Dimensions: fixtureVectorDims, Similarity: "euclidean"}
+	inv.Vectors["embedding"] = source.VectorField{Name: "embedding", Dimensions: fixtureVectorDims, Similarity: "euclidean", SourceSimilarity: "l2_norm"}
 	for _, field := range []source.PayloadIndex{
 		{Name: "title", Type: "text", Analyzers: []string{"english"}},
 		{Name: "body", Type: "text", Analyzers: []string{"standard"}},

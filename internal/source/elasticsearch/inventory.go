@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sort"
 
+	"github.com/lambdadb/lambdadb-migration/internal/config"
 	"github.com/lambdadb/lambdadb-migration/internal/source"
 )
 
@@ -82,11 +83,14 @@ func walkProperties(inv *source.Inventory, prefix string, properties map[string]
 			if field.Dimensions < 1 {
 				inv.Warnings = append(inv.Warnings, fmt.Sprintf("dense_vector field %q did not report dims; add dimensions manually before migration", path))
 			}
-			inv.Vectors[path] = source.VectorField{
-				Name:       path,
-				Dimensions: field.Dimensions,
-				Similarity: mapSimilarity(field.Similarity),
+			vector := source.VectorField{
+				Name:             path,
+				Dimensions:       field.Dimensions,
+				Similarity:       mapSimilarity(field.Similarity),
+				SourceSimilarity: field.Similarity,
 			}
+			inv.Vectors[path] = vector
+			inv.Warnings = append(inv.Warnings, config.VectorFieldWarnings("Elasticsearch", path, vector)...)
 		case "text":
 			analyzers := fieldAnalyzers(inv, path, field, definitions)
 			inv.PayloadIndexes[path] = source.PayloadIndex{Name: path, Type: "text", Analyzers: analyzers}

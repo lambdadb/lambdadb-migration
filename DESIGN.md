@@ -198,7 +198,8 @@ Important LambdaDB constraints from docs and SDK:
 - Upsert payload limit: 6 MB.
 - Bulk upsert object limit: 200 MB.
 - Max document size: 5 MB.
-- Max vector dimensions: 4,096.
+- Vector dimensions: 64 to 4,096.
+- Vector similarity: `cosine` or `euclidean`.
 - Document IDs are strings and max length is 512.
 - Bulk upsert is asynchronous, so validation must poll or wait before expecting `numDocs` to match.
 - Bulk upsert is not supported for collections with managed embedding vector fields.
@@ -215,9 +216,9 @@ Important LambdaDB constraints from docs and SDK:
 | Payload | Document fields | Merge into document unless configured under a nested object. |
 | Payload index | `indexConfigs` entry | Map searchable/sortable fields only. |
 | Qdrant `Cosine` | LambdaDB `cosine` | Direct mapping. |
-| Qdrant `Dot` | LambdaDB `dot_product` | Direct mapping. |
+| Qdrant `Dot` | No supported equivalent | Fail validation unless the user sets a supported similarity in the mapping. |
 | Qdrant `Euclid` | LambdaDB `euclidean` | Direct mapping. |
-| Qdrant `Manhattan` | No direct equivalent | Fail by default unless user overrides. |
+| Qdrant `Manhattan` | No supported equivalent | Fail validation unless the user sets a supported similarity in the mapping. |
 | MultiVector | Unsupported by default | Require explicit transform strategy. |
 
 Field-name policy:

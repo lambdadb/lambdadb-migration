@@ -48,14 +48,10 @@ func mapSimilarity(value string) (components.Similarity, error) {
 		return components.SimilarityCosine, nil
 	case "euclidean":
 		return components.SimilarityEuclidean, nil
-	case "dot_product":
-		return components.SimilarityDotProduct, nil
-	case "max_inner_product":
-		return components.SimilarityMaxInnerProduct, nil
-	case "unsupported:manhattan":
-		return "", fmt.Errorf("Manhattan distance has no direct LambdaDB similarity equivalent")
 	default:
-		return "", fmt.Errorf("unsupported similarity %q", value)
+		// The SDK still has dot_product and max_inner_product constants, but the
+		// LambdaDB API rejects them; mapping validation reports these first.
+		return "", fmt.Errorf("unsupported similarity %q; LambdaDB supports cosine, euclidean", value)
 	}
 }
 

@@ -2,6 +2,8 @@ package elasticsearch
 
 import (
 	"context"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/lambdadb/lambdadb-migration/internal/config"
@@ -80,6 +82,71 @@ func TestInventoryMapsElasticsearchFields(t *testing.T) {
 	}
 	if err := config.ValidateMapping(inv, mapping, "articles", config.WriteModeBulk); err != nil {
 		t.Fatalf("ValidateMapping() error = %v", err)
+	}
+}
+
+// Inventory reports unsupported dense_vector similarities as warnings, and the
+// generated mapping fails validation before any LambdaDB request.
+func TestInventoryReportsUnsupportedDenseVectorSimilarity(t *testing.T) {
+	server := newTestServer(t, map[string]handlerFunc{
+		"GET /articles/_settings": func(t *testing.T, w responseWriter, r request) {
+			writeJSON(t, w, map[string]any{"articles": map[string]any{"settings": map[string]any{"index": map[string]any{}}}})
+		},
+		"GET /articles/_mapping": func(t *testing.T, w responseWriter, r request) {
+			writeJSON(t, w, map[string]any{
+				"articles": map[string]any{
+					"mappings": map[string]any{
+						"properties": map[string]any{
+							"dot":   map[string]any{"type": "dense_vector", "dims": 384, "similarity": "dot_product"},
+							"mip":   map[string]any{"type": "dense_vector", "dims": 384, "similarity": "max_inner_product"},
+							"plain": map[string]any{"type": "dense_vector", "dims": 384},
+						},
+					},
+				},
+			})
+		},
+		"GET /articles/_count": func(t *testing.T, w responseWriter, r request) {
+			writeJSON(t, w, map[string]any{"count": 0})
+		},
+	})
+
+	src, err := New(config.ElasticsearchConfig{URL: server.URL, Index: "articles"})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	inv, err := src.Inventory(context.Background())
+	if err != nil {
+		t.Fatalf("Inventory() error = %v", err)
+	}
+
+	for name, want := range map[string]source.VectorField{
+		"dot":   {Name: "dot", Dimensions: 384, Similarity: "dot_product", SourceSimilarity: "dot_product"},
+		"mip":   {Name: "mip", Dimensions: 384, Similarity: "max_inner_product", SourceSimilarity: "max_inner_product"},
+		"plain": {Name: "plain", Dimensions: 384, Similarity: "cosine"},
+	} {
+		if got := inv.Vectors[name]; got != want {
+			t.Fatalf("vector %q = %#v, want %#v", name, got, want)
+		}
+	}
+	wantWarnings := []string{
+		`vector "dot" uses Elasticsearch metric "dot_product", which LambdaDB does not support (supported: cosine, euclidean); migration validation fails unless the mapping sets a supported similarity`,
+		`vector "mip" uses Elasticsearch metric "max_inner_product", which LambdaDB does not support (supported: cosine, euclidean); migration validation fails unless the mapping sets a supported similarity`,
+	}
+	if len(inv.Warnings) < len(wantWarnings) || !reflect.DeepEqual(inv.Warnings[:len(wantWarnings)], wantWarnings) {
+		t.Fatalf("warnings = %q, want them to start with %q", inv.Warnings, wantWarnings)
+	}
+
+	err = config.ValidateMapping(inv, config.MappingFromInventory(inv, "articles"), "articles", config.WriteModeBulk)
+	for _, want := range []string{
+		`vector "dot" uses unsupported similarity "dot_product" (source elasticsearch metric "dot_product"); LambdaDB supports cosine, euclidean`,
+		`vector "mip" uses unsupported similarity "max_inner_product" (source elasticsearch metric "max_inner_product"); LambdaDB supports cosine, euclidean`,
+	} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("ValidateMapping() error = %v, want it to contain %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), `vector "plain"`) {
+		t.Fatalf("ValidateMapping() error = %v, want no error for the default cosine vector", err)
 	}
 }
 
