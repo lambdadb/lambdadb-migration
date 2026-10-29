@@ -532,14 +532,38 @@ Create a local release snapshot with GoReleaser:
 goreleaser release --snapshot --clean
 ```
 
-Publish a GitHub release:
+### Branches and releases
 
-```bash
-git tag v0.1.3
-git push origin v0.1.3
-```
+`develop` integrates changes and `main` holds released history.
 
-Tag pushes matching `v*` run the release workflow and publish GoReleaser artifacts to GitHub Releases.
+1. Branch feature and fix work from `develop`, open the pull request against
+   `develop` (GitHub defaults to `main`, so select the base explicitly), and
+   merge it with **Squash and merge**.
+2. Prepare a release (for example, Go SDK or documentation updates) on
+   `develop` the same way.
+3. Promote with a `develop` -> `main` pull request merged with
+   **Create a merge commit**.
+4. Tag the resulting `main` commit and push the tag:
+
+   ```bash
+   git tag v0.1.3 <main-merge-commit>
+   git push origin v0.1.3
+   ```
+
+   Tag pushes matching `v*` run the release workflow and publish GoReleaser
+   artifacts to GitHub Releases. Never move a published tag.
+5. When `main` has commits absent from `develop` (a hotfix or a Dependabot
+   security update merged into `main`), open a `main` -> `develop` pull request
+   and merge it with **Create a merge commit**. Never squash or rebase this
+   synchronization; that drops the shared ancestry, so later comparisons repeat
+   synchronized commits and release tags become unreachable from `develop`.
+   Afterwards, `git merge-base --is-ancestor <main-commit> origin/develop` must
+   succeed.
+
+Once lambdadb/lambdadb-iac#22 is applied, organization rulesets enforce this:
+`develop` and `main` cannot be deleted or force-pushed and accept changes only
+through pull requests; `develop` accepts squash and merge commits (no rebase),
+and `main` accepts merge commits only.
 
 ## Integration Tests
 
