@@ -197,6 +197,7 @@ func (w *Worker) Run(ctx context.Context) error {
 				return e
 			}
 		}
+		remote.Objects = objects
 		replica, e = statefile.OpenReplica(ctx, objects, remote.Prefix, statefile.Binding{StoreID: remote.StoreID, Region: w.Region, ConnectionID: approved.Binding.ConnectionID, Fingerprint: w.fingerprint}, remote.Epoch)
 		if e != nil {
 			return e

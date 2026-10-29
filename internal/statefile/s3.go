@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -19,6 +21,57 @@ import (
 type S3Objects struct {
 	client *s3.Client
 	bucket string
+	mu     sync.Mutex
+	stats  S3Metrics
+}
+
+// Counts SDK invocations (with SDK retries disabled), not a billing receipt.
+// Durations include request/response handling; buckets are noncumulative bounds.
+type S3Metrics struct {
+	Gets       uint64            `json:"get_calls"`
+	Puts       uint64            `json:"put_calls"`
+	Failures   uint64            `json:"failures"`
+	ReadBytes  uint64            `json:"successful_read_bytes"`
+	WriteBytes uint64            `json:"attempted_write_bytes"`
+	Latency    map[string]uint64 `json:"latency_bucket_ms"`
+}
+
+func (s *S3Objects) observe(put bool, started time.Time, size int, failed bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if put {
+		s.stats.Puts++
+		s.stats.WriteBytes += uint64(size)
+	} else {
+		s.stats.Gets++
+		s.stats.ReadBytes += uint64(size)
+	}
+	if failed {
+		s.stats.Failures++
+	}
+	if s.stats.Latency == nil {
+		s.stats.Latency = map[string]uint64{}
+	}
+	label := "+Inf"
+	elapsed := time.Since(started)
+	for _, bound := range []int64{1, 5, 10, 25, 50, 100, 250, 500, 1000, 5000, 30000} {
+		if elapsed <= time.Duration(bound)*time.Millisecond {
+			label = strconv.FormatInt(bound, 10)
+			break
+		}
+	}
+	s.stats.Latency[label]++
+}
+
+func (s *S3Objects) Metrics() S3Metrics {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := s.stats
+	out.Latency = map[string]uint64{}
+	for bound, count := range s.stats.Latency {
+		out.Latency[bound] = count
+	}
+	return out
 }
 
 var bucketName = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
@@ -55,26 +108,30 @@ func objectError(err error) error {
 	return errors.New("S3 state request failed or unconfirmed")
 }
 
-func (s *S3Objects) Get(ctx context.Context, key string, limit int64) ([]byte, string, error) {
+func (s *S3Objects) Get(ctx context.Context, key string, limit int64) (raw []byte, etag string, err error) {
 	if limit <= 0 || limit > maxObjectBytes {
 		return nil, "", errors.New("invalid state object read limit")
 	}
+	started := time.Now()
+	defer func() { s.observe(false, started, len(raw), err != nil) }()
 	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key)})
 	if err != nil {
 		return nil, "", objectError(err)
 	}
 	defer out.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(out.Body, limit+1))
+	raw, err = io.ReadAll(io.LimitReader(out.Body, limit+1))
 	if err != nil || int64(len(raw)) > limit || aws.ToString(out.ETag) == "" {
 		return nil, "", errors.New("S3 state object unavailable or oversized")
 	}
 	return raw, aws.ToString(out.ETag), nil
 }
 
-func (s *S3Objects) Put(ctx context.Context, key string, raw []byte, etag string) (string, error) {
+func (s *S3Objects) Put(ctx context.Context, key string, raw []byte, etag string) (next string, err error) {
 	if len(raw) == 0 || len(raw) > maxObjectBytes {
 		return "", errors.New("invalid state object write size")
 	}
+	started := time.Now()
+	defer func() { s.observe(true, started, len(raw), err != nil) }()
 	in := &s3.PutObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key), Body: bytes.NewReader(raw), ContentType: aws.String("application/octet-stream")}
 	if etag == "" {
 		in.IfNoneMatch = aws.String("*")

@@ -44,3 +44,21 @@ func TestInspectionCLIRefusesInitializationAndDoesNotCreateFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestManagedWorkerRequiresS3BeforeOpeningLocalState(t *testing.T) {
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	command := exec.Command(binary, "-test.run=^TestInspectionCLIHelper$")
+	command.Env = append(os.Environ(), "CONNECTION_INSPECTION_HELPER=1", "CONNECTION_INSPECTION_DIRECTORY="+dir, "CONNECTION_REQUIRE_S3_STATE=1")
+	out, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "managed execution requires S3 recovery state") {
+		t.Fatal("managed execution permitted local-only recovery")
+	}
+	files, err := os.ReadDir(dir)
+	if err != nil || len(files) != 0 {
+		t.Fatal("managed fallback touched local state")
+	}
+}

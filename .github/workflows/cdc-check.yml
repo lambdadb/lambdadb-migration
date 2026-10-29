@@ -9,6 +9,7 @@ on:
       - "internal/connections/**"
       - "internal/statefile/**"
       - "Dockerfile.connection-worker"
+      - "Dockerfile.connection-s3-probe"
       - "Dockerfile.connection-fault-probe"
       - "Dockerfile.connection-crash-probe"
       - "Dockerfile.connection-volume-probe"
@@ -28,6 +29,7 @@ on:
       - "internal/connections/**"
       - "internal/statefile/**"
       - "Dockerfile.connection-worker"
+      - "Dockerfile.connection-s3-probe"
       - "Dockerfile.connection-fault-probe"
       - "Dockerfile.connection-crash-probe"
       - "Dockerfile.connection-volume-probe"
@@ -57,6 +59,8 @@ jobs:
       - run: docker build -f Dockerfile.connection-worker -t lambdadb-connection-worker:ci .
       - run: docker run --rm lambdadb-connection-worker:ci -help
       - run: docker run --rm --entrypoint connection-state lambdadb-connection-worker:ci -help
+      - run: docker build --platform linux/amd64 -f Dockerfile.connection-s3-probe -t connection-s3-probe:ci .
+      - run: docker run --rm --network none connection-s3-probe:ci
       - run: docker build --platform linux/amd64 -f Dockerfile.connection-volume-probe -t connection-volume-probe:ci .
       - run: docker run --rm connection-volume-probe:ci '-test.run=^TestStateVolumeProbeLocal$'
       - run: docker run --rm connection-volume-probe:ci '-test.run=^TestPartitionFault'

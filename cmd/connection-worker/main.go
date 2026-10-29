@@ -15,6 +15,7 @@ import (
 	"syscall"
 
 	"github.com/lambdadb/lambdadb-migration/internal/connections"
+	"github.com/lambdadb/lambdadb-migration/internal/statefile"
 )
 
 func main() {
@@ -33,6 +34,10 @@ func main() {
 	insecureSource := flag.Bool("allow-insecure-source", false, "allow plaintext PostgreSQL for isolated local testing")
 	caFile := flag.String("ca-file", "", "additional trusted CA PEM for regional/target HTTPS")
 	flag.Parse()
+	if os.Getenv("CONNECTION_REQUIRE_S3_STATE") == "1" && *stateStore != "s3" {
+		fmt.Fprintln(os.Stderr, "managed execution requires S3 recovery state")
+		os.Exit(1)
+	}
 	if (*stateStore != "local" && *stateStore != "s3") || (*stateStore == "local" && (*s3Bucket != "" || *s3Prefix != "" || *s3StoreID != "" || *stateEpoch != 1)) || (*stateStore == "s3" && (*s3Bucket == "" || *s3Prefix == "" || *s3StoreID == "" || *stateEpoch == 0 || *inspect)) {
 		fmt.Fprintln(os.Stderr, "invalid state store options; use connection-state for read-only S3 inspection")
 		os.Exit(1)
@@ -79,7 +84,13 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err = worker.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+	err = worker.Run(ctx)
+	if worker.RemoteState != nil {
+		if objects, ok := worker.RemoteState.Objects.(*statefile.S3Objects); ok {
+			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"connection_state_storage": objects.Metrics()})
+		}
+	}
+	if err != nil && !errors.Is(err, context.Canceled) {
 		fmt.Fprintln(os.Stderr, "connection worker stopped:", err)
 		os.Exit(1)
 	}

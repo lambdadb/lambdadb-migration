@@ -39,6 +39,11 @@ store's region. Standard AWS SDK credentials are used only when S3 is selected;
 managed tasks use scoped roles. The existing regional worker token and secret
 references remain required. Never place raw source credentials or API keys in flags.
 
+Managed task templates set `CONNECTION_REQUIRE_S3_STATE=1`; the worker refuses
+local mode before opening state. The controller durably assigns `state_epoch`
+and injects its value into the RunTask command. Standalone execution keeps its
+local default and does not require that managed environment variable.
+
 Exactly one process owns a connection. Before replacement, confirm the previous
 actual process/task has stopped. The managed controller assigns the execution epoch;
 standalone operators retain this responsibility when moving to another host and
@@ -76,6 +81,20 @@ opaque request bytes, payload digests and integers without JSON re-encoding. A n
 staged source image can reuse the old source image as its base. Changes far apart
 can include the intervening bytes; this first implementation does not promise
 per-row upload cost or high throughput. Measure actual requests/bytes and latency.
+
+On exit, an S3 worker emits one `connection_state_storage` JSON summary containing
+SDK get/put call counts, failures, successful read bytes, attempted write bytes and
+noncumulative latency buckets. No keys, paths, payloads, identities or secrets are
+included. SDK retries are disabled; these counters describe SDK invocations and
+are not an AWS billing receipt. Bucketed p50/p95/p99 are upper bounds, not precise
+server-side performance measurements. Local mode emits no S3 metrics.
+
+`Dockerfile.connection-s3-probe` builds a separate opt-in test image. The default
+CI run needs no network and skips its live permission test. The isolated AWS runner
+executes it under an actual connection worker role, using only fresh, unreferenced
+canaries. It verifies own-prefix creation, foreign-prefix read/write denial,
+regional-control denial, immutable overwrite denial, unconditional-write denial
+and deletion denial. It never writes the active recovery head or runs capture.
 
 A coherent checkpoint is published after 128 state records before further writes.
 Recovery accepts at most 128 records and 128 MiB of replay payload bytes. Existing

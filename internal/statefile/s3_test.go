@@ -59,6 +59,10 @@ func TestS3ConditionalHeadersAndUnknownResponseNeverRetry(t *testing.T) {
 	if _, err := objects.Put(t.Context(), "head.json", []byte(`{}`), etag); err == nil || errors.Is(err, ErrConflict) || calls.Load() != 3 {
 		t.Fatal("unknown response was retried or treated as non-acceptance", err, calls.Load())
 	}
+	metrics := objects.Metrics()
+	if metrics.Puts != 3 || metrics.Gets != 0 || metrics.Failures != 2 || metrics.WriteBytes != 6 {
+		t.Fatal("request metrics do not match actual SDK calls")
+	}
 }
 
 func TestS3ErrorsCannotBecomeRecordAbsence(t *testing.T) {
