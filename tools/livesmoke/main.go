@@ -1,6 +1,6 @@
 // Command livesmoke runs the fixture live suite against a deployed LambdaDB
-// environment. It reads the project API key from AWS Secrets Manager, masks it
-// in GitHub Actions logs, and passes it only in the go test child environment.
+// environment. It reads the project API key from LAMBDADB_PROJECT_API_KEY, which
+// CI sets from a GitHub Environment secret that Actions masks in logs.
 package main
 
 import (
@@ -20,7 +20,7 @@ const (
 )
 
 var (
-	requiredConfig = []string{"LAMBDADB_BASE_URL", "LAMBDADB_PROJECT_NAME", "LAMBDADB_SMOKE_SECRET_ARN"}
+	requiredConfig = []string{"LAMBDADB_BASE_URL", "LAMBDADB_PROJECT_NAME", "LAMBDADB_PROJECT_API_KEY"}
 	goTestArgs     = []string{"test", "./integration_tests", "-run", "^" + liveTest + "$", "-count=1", "-timeout=30m", "-json"}
 )
 
@@ -53,24 +53,12 @@ func run(environ []string, execute commandRunner, stdout, stderr io.Writer) erro
 		}
 	}
 
-	var secret bytes.Buffer
-	if err := execute("aws", []string{"secretsmanager", "get-secret-value", "--region", "ap-northeast-2",
-		"--secret-id", config["LAMBDADB_SMOKE_SECRET_ARN"], "--query", "SecretString", "--output", "text"},
-		environ, &secret, io.Discard); err != nil {
-		// Do not include AWS command output in errors.
-		return errors.New("unable to read the smoke project key from Secrets Manager")
-	}
-	key := strings.TrimSpace(secret.String())
-	if key == "" || key == "None" || strings.ContainsAny(key, "\r\n") {
-		return errors.New("expected a single project API key in SecretString")
-	}
-	// The workflow command hides the key in GitHub Actions logs. Elsewhere it
-	// would print the key, so local runs skip it.
-	if config["GITHUB_ACTIONS"] == "true" {
-		fmt.Fprintf(stdout, "::add-mask::%s\n", strings.ReplaceAll(key, "%", "%25"))
+	key := strings.TrimSpace(config["LAMBDADB_PROJECT_API_KEY"])
+	if strings.ContainsAny(key, "\r\n") {
+		return errors.New("expected a single project API key")
 	}
 
-	// Keep the key out of files, command arguments, and the parent environment.
+	// Pass the trimmed key to go test in its environment, never its arguments.
 	env := make([]string, 0, len(environ)+2)
 	for _, entry := range environ {
 		name, _, _ := strings.Cut(entry, "=")

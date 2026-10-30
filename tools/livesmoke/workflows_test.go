@@ -13,11 +13,12 @@ import (
 type workflow struct {
 	On   map[string]any `yaml:"on"`
 	Jobs map[string]struct {
-		If    string            `yaml:"if"`
-		Needs any               `yaml:"needs"`
-		Uses  string            `yaml:"uses"`
-		With  map[string]string `yaml:"with"`
-		Steps []struct {
+		If          string            `yaml:"if"`
+		Needs       any               `yaml:"needs"`
+		Environment string            `yaml:"environment"`
+		Uses        string            `yaml:"uses"`
+		With        map[string]string `yaml:"with"`
+		Steps       []struct {
 			Name string `yaml:"name"`
 			Run  string `yaml:"run"`
 		} `yaml:"steps"`
@@ -84,7 +85,7 @@ func TestWorkflowsSelectTheLiveSmokeEnvironment(t *testing.T) {
 func TestLiveSmokeWorkflowMapsEnvironmentToVariablePrefix(t *testing.T) {
 	wf, source := readWorkflow(t, "live-smoke.yml")
 	var script string
-	for _, step := range wf.Jobs["smoke"].Steps {
+	for _, step := range wf.Jobs["target"].Steps {
 		if step.Name == "Select the LambdaDB environment" {
 			script = step.Run
 		}
@@ -102,14 +103,38 @@ func TestLiveSmokeWorkflowMapsEnvironmentToVariablePrefix(t *testing.T) {
 			if err == nil || len(got) != 0 {
 				t.Errorf("environment %q: err = %v, output = %q, want failure", environment, err, got)
 			}
-		} else if err != nil || string(got) != "prefix="+want+"\n" {
+		} else if err != nil || string(got) != "prefix="+want+"\nenvironment="+environment+"\n" {
 			t.Errorf("environment %q: err = %v, output = %q, want prefix %s", environment, err, got, want)
 		}
 	}
 
 	// Every Variable lookup uses the selected prefix, never a fixed environment.
 	lookups := strings.Count(source, "vars[")
-	if lookups != 4 || strings.Count(source, "vars[format('{0}") != lookups || strings.Count(source, "steps.target.outputs.prefix)]") != lookups {
-		t.Errorf("live-smoke.yml must read its 4 Variables through the selected prefix")
+	if lookups != 2 || strings.Count(source, "vars[format('{0}") != lookups || strings.Count(source, "needs.target.outputs.prefix)]") != lookups {
+		t.Errorf("live-smoke.yml must read its 2 Variables through the selected prefix")
+	}
+}
+
+// The smoke key comes only from the GitHub Environment the selection job
+// picks; no AWS step, ARN, or OIDC token remains.
+func TestLiveSmokeReadsTheKeyFromTheSelectedEnvironment(t *testing.T) {
+	wf, source := readWorkflow(t, "live-smoke.yml")
+	smoke := wf.Jobs["smoke"]
+	if smoke.Needs != "target" || smoke.Environment != "${{ needs.target.outputs.environment }}" {
+		t.Errorf("smoke job needs = %v, environment = %q, want the target job's environment", smoke.Needs, smoke.Environment)
+	}
+	if wf.Jobs["target"].Environment != "" {
+		t.Error("the selection job must not run in an Environment")
+	}
+	if strings.Count(source, "secrets.") != 1 || !strings.Contains(source, "LAMBDADB_PROJECT_API_KEY: ${{ secrets.LAMBDADB_PROJECT_API_KEY }}") {
+		t.Error("live-smoke.yml must read only LAMBDADB_PROJECT_API_KEY from secrets")
+	}
+	for _, name := range []string{"ci.yml", "release.yml", "release-verification.yml", "live-smoke.yml"} {
+		_, text := readWorkflow(t, name)
+		for _, removed := range []string{"configure-aws-credentials", "SMOKE_AWS_ROLE_ARN", "SMOKE_SECRET_ARN", "id-token"} {
+			if strings.Contains(text, removed) {
+				t.Errorf("%s still contains %s", name, removed)
+			}
+		}
 	}
 }

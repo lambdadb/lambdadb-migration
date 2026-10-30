@@ -639,12 +639,14 @@ Deployed LambdaDB gates run the fixture live suite
 | Release verification (`workflow_dispatch` on `main`) | production |
 | `v*` tag push | production, before GoReleaser publishes |
 
-`.github/workflows/live-smoke.yml` is the shared job. It assumes a GitHub OIDC
-role, then `go run ./tools/livesmoke` reads the project API key from AWS Secrets
-Manager, masks it in the GitHub Actions log, and passes it only in the `go test` child
+`.github/workflows/live-smoke.yml` is the shared workflow. Its `target` job maps
+the caller's environment to a Variable prefix, and its `smoke` job runs in the
+GitHub Environment of the same name (`dev` or `prod`). `go run ./tools/livesmoke`
+reads the project API key from the Environment secret `LAMBDADB_PROJECT_API_KEY`,
+which Actions masks in logs, and passes it to `go test` only through the
 environment, never in arguments, files, or artifacts. The runner fails on
-missing configuration, a failed secret read, a failed test, a skipped test or
-case, or a run that did not execute the live test.
+missing configuration, a blank or multi-line key, a failed test, a skipped test
+or case, or a run that did not execute the live test.
 
 The workflows read these repository Variables. A missing Variable fails the run;
 it never falls back to the other environment.
@@ -653,13 +655,22 @@ it never falls back to the other environment.
 | :-- | :-- |
 | `LAMBDADB_DEV_BASE_URL`, `LAMBDADB_PROD_BASE_URL` | LambdaDB endpoint |
 | `LAMBDADB_DEV_PROJECT_NAME`, `LAMBDADB_PROD_PROJECT_NAME` | Dedicated smoke project (`migration-ci`) |
-| `LAMBDADB_DEV_SMOKE_AWS_ROLE_ARN`, `LAMBDADB_PROD_SMOKE_AWS_ROLE_ARN` | OIDC roles `lambdadb-migration-smoke` and `lambdadb-migration-prod-smoke` |
-| `LAMBDADB_DEV_SMOKE_SECRET_ARN`, `LAMBDADB_PROD_SMOKE_SECRET_ARN` | Secrets Manager ARN of the project API key (`ap-northeast-2`) |
 
-The dev role trusts `repo:lambdadb/lambdadb-migration:ref:refs/heads/main`; the
-production role trusts that subject and
-`repo:lambdadb/lambdadb-migration:ref:refs/tags/v*`. Grant each role read access only to its
-own environment's secret.
+Each GitHub Environment holds the secret `LAMBDADB_PROJECT_API_KEY`, the
+`migration-ci` project API key for its LambdaDB environment:
+
+| Environment | Deployment branches and tags | Key |
+| :-- | :-- | :-- |
+| `dev` | branch `main` | Dev smoke project |
+| `prod` | branch `main`, tag `v*` | Production smoke project |
+
+The deployment policy keeps the key away from other branches and tags, so
+release verification must run from `main`. Never use the stack admin key.
+Rotate a key by issuing a new project key and replacing the Environment secret:
+
+```bash
+gh secret set LAMBDADB_PROJECT_API_KEY --env <dev|prod> --repo lambdadb/lambdadb-migration
+```
 
 ## Integration Tests
 
@@ -706,19 +717,17 @@ LAMBDADB_MIGRATION_RUN_FIXTURE_LIVE_E2E=1 go test ./integration_tests \
 ```
 
 With the flag set, missing LambdaDB variables fail the test instead of skipping
-it. To run exactly what CI runs, with the key read from Secrets Manager through
-your AWS profile:
+it. To run exactly what CI runs against dev, keep the dev smoke project's
+settings outside the repository in `~/.config/lambdadb/smoke/dev/migration-ci.env`
+(mode `0600`) with `LAMBDADB_BASE_URL`, `LAMBDADB_PROJECT_NAME`, and
+`LAMBDADB_PROJECT_API_KEY`, and load it into the shell:
 
 ```bash
-AWS_PROFILE=dev \
-LAMBDADB_BASE_URL="https://internal-dev-aws-apne2-v3-c05a2b5d492a.lambdadb.ai" \
-LAMBDADB_PROJECT_NAME=migration-ci \
-LAMBDADB_SMOKE_SECRET_ARN="<LAMBDADB_DEV_SMOKE_SECRET_ARN value>" \
+set -a; . ~/.config/lambdadb/smoke/dev/migration-ci.env; set +a
 go run ./tools/livesmoke
 ```
 
-Use the `LAMBDADB_PROD_` values from `gh variable list --repo lambdadb/lambdadb-migration`
-for production. The real-source tests below remain manual.
+The real-source tests below remain manual.
 
 ### Real-source tests
 
