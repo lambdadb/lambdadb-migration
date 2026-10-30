@@ -209,6 +209,8 @@ metadata in one catalog statement instead of five round trips.
 
 Disconnect without uncertain work stops capture and removes only an owned inactive
 pgoutput slot. It makes no engine disconnect/seal call and preserves the collection.
+A continuous connection with no retained slot or bootstrap ownership disconnects
+without resolving source credentials, so an unusable source secret cannot block it.
 The backend retires the source secret and releases central deletion guards only
 after a matching successful regional disconnection observation. An uncertain
 connection cannot certify disconnection or release those guards. An unreachable

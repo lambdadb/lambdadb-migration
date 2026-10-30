@@ -485,16 +485,23 @@ func (w *Worker) execute(ctx context.Context, a protocol.Approved) error {
 			return err
 		}
 		if a.Binding.Mode == "continuous" {
-			sourceSecret, e := w.Secrets.Resolve(ctx, a.Binding.Region, a.Binding.Source.CredentialRef)
+			// Only retained source ownership needs credentials to release a slot.
+			owned, e := capture.Owned()
 			if e != nil {
-				return errors.New("source_setup_required")
+				return e
 			}
-			dsn, e := SourceDSN(sourceSecret, w.AllowInsecureSource)
-			if e != nil {
-				return errors.New("source_setup_required")
-			}
-			if e = capture.Disconnect(ctx, dsn); e != nil {
-				return errors.New("source_setup_required")
+			if owned {
+				sourceSecret, e := w.Secrets.Resolve(ctx, a.Binding.Region, a.Binding.Source.CredentialRef)
+				if e != nil {
+					return errors.New("source_setup_required")
+				}
+				dsn, e := SourceDSN(sourceSecret, w.AllowInsecureSource)
+				if e != nil {
+					return errors.New("source_setup_required")
+				}
+				if e = capture.Disconnect(ctx, dsn); e != nil {
+					return errors.New("source_setup_required")
+				}
 			}
 		}
 		return w.phase("disconnected", "")

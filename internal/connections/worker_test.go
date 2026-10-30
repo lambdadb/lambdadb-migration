@@ -537,3 +537,20 @@ func TestWorkerStopsAfterRetainedHandleFailure(t *testing.T) {
 		})
 	}
 }
+
+func TestWorkerDisconnectsNeverStartedContinuousSourceWithoutCredentials(t *testing.T) {
+	f := newWorkerFixture(t, "continuous")
+	f.mu.Lock()
+	// The source secret is unusable and no slot or bootstrap was ever acquired.
+	f.credentials = "not-a-credential"
+	f.approved.Control.DesiredState = "disconnected"
+	f.mu.Unlock()
+	cancel, done := f.worker(t, true)
+	f.await(t, func() bool { return f.phaseIs("disconnected") })
+	stopWorker(t, cancel, done)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.creates != 0 || f.mutations != 0 {
+		t.Fatal("disconnect of a never-started connection touched the target")
+	}
+}

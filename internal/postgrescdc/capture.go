@@ -337,6 +337,23 @@ func (c *Capture) Stream(ctx context.Context, dsn string, apply func(context.Con
 
 // Disconnect drops only the slot whose source identity and configuration were
 // durably recorded by this capture. Publications and table data are preserved.
+// Owned reports whether retained regional state claims a source slot or
+// bootstrap, so a connection that never started can disconnect without a DSN.
+func (c *Capture) Owned() (bool, error) {
+	if c.Store == nil {
+		return false, errors.New("regional source ownership state required")
+	}
+	state, err := c.Store.Load()
+	if err != nil {
+		return false, err
+	}
+	owner, err := c.Store.loadBootstrap()
+	if err != nil {
+		return false, err
+	}
+	return state != nil || owner != nil, nil
+}
+
 func (c *Capture) Disconnect(ctx context.Context, dsn string) error {
 	config, err := c.Selection.config()
 	if err != nil {
