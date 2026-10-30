@@ -17,13 +17,16 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
-  smoke:
-    name: Fixture live smoke (${{ inputs.environment }})
+  # A job's environment must be known before it starts, so the selection runs
+  # in its own job.
+  target:
+    name: Select the LambdaDB environment
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    outputs:
+      prefix: ${{ steps.target.outputs.prefix }}
+      environment: ${{ steps.target.outputs.environment }}
     steps:
       # Each environment reads only its own Variables. A missing Variable fails
       # the run; it never falls back to the other environment.
@@ -38,7 +41,17 @@ jobs:
             *) echo "Unknown live smoke environment: $SMOKE_ENVIRONMENT" >&2; exit 1 ;;
           esac
           echo "prefix=$PREFIX" >> "$GITHUB_OUTPUT"
+          echo "environment=$SMOKE_ENVIRONMENT" >> "$GITHUB_OUTPUT"
 
+  # The GitHub Environment holds the smoke project API key. Its deployment
+  # policy admits only main (dev, prod) and v* tags (prod).
+  smoke:
+    name: Fixture live smoke (${{ inputs.environment }})
+    needs: target
+    runs-on: ubuntu-latest
+    environment: ${{ needs.target.outputs.environment }}
+    timeout-minutes: 40
+    steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
@@ -50,18 +63,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Authenticate smoke tests to AWS
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          role-to-assume: ${{ vars[format('{0}SMOKE_AWS_ROLE_ARN', steps.target.outputs.prefix)] }}
-          aws-region: ap-northeast-2
-          role-session-name: migration-smoke-${{ github.run_id }}
-
       - name: Run deployed fixture live smoke
         env:
-          LAMBDADB_BASE_URL: ${{ vars[format('{0}BASE_URL', steps.target.outputs.prefix)] }}
-          LAMBDADB_PROJECT_NAME: ${{ vars[format('{0}PROJECT_NAME', steps.target.outputs.prefix)] }}
-          LAMBDADB_SMOKE_SECRET_ARN: ${{ vars[format('{0}SMOKE_SECRET_ARN', steps.target.outputs.prefix)] }}
+          LAMBDADB_BASE_URL: ${{ vars[format('{0}BASE_URL', needs.target.outputs.prefix)] }}
+          LAMBDADB_PROJECT_NAME: ${{ vars[format('{0}PROJECT_NAME', needs.target.outputs.prefix)] }}
+          LAMBDADB_PROJECT_API_KEY: ${{ secrets.LAMBDADB_PROJECT_API_KEY }}
         run: |
           echo "Live smoke target: $LAMBDADB_BASE_URL project $LAMBDADB_PROJECT_NAME at $(git rev-parse HEAD)"
           go run ./tools/livesmoke

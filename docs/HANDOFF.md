@@ -30,13 +30,13 @@ server-managed `id` keyword), every document's fields and values, and `numDocs`,
 and deletes each collection and polls until it is gone.
 
 `tools/livesmoke` is the CI entry point: it reads the project API key from
-Secrets Manager with the AWS CLI after the workflow assumes the OIDC role
-(`lambdadb-migration-smoke` for dev, `lambdadb-migration-prod-smoke` for
-production, project `migration-ci` in both), masks it in GitHub Actions, passes
-it only in the `go test` child environment, and fails unless the live test ran
-and passed with no skipped case. The repository Variables are
-`LAMBDADB_{DEV,PROD}_{BASE_URL,PROJECT_NAME,SMOKE_AWS_ROLE_ARN,SMOKE_SECRET_ARN}`.
-See README "Live Smoke Gates" for local commands.
+`LAMBDADB_PROJECT_API_KEY`, which the workflow sets from the secret of the
+GitHub Environment the `smoke` job runs in (`dev` or `prod`, project
+`migration-ci` in both; Actions masks it), passes it to `go test` only through
+the environment, and fails unless the live test ran and passed with no skipped
+case.
+The repository Variables are `LAMBDADB_{DEV,PROD}_{BASE_URL,PROJECT_NAME}`.
+See README "Live Smoke Gates" for the Environments and local commands.
 
 Server constraints found while adding the suite: vector dimensions must be 64
 to 4096, so fixture vectors are zero-padded to 64 dimensions; similarity must be

@@ -25,7 +25,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # The production smoke role trusts only main and v* tags.
+      # The prod GitHub Environment admits only main and v* tags.
       - name: Verify the commit is on main
         id: commit
         env:
@@ -49,7 +49,6 @@ jobs:
     needs: resolve
     permissions:
       contents: read
-      id-token: write
     uses: ./.github/workflows/live-smoke.yml
     with:
       environment: prod

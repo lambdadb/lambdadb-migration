@@ -11,14 +11,11 @@ import (
 	"testing"
 )
 
-const secretARN = "arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:smoke-key"
-
 func smokeEnv() []string {
 	return []string{
 		"LAMBDADB_BASE_URL=https://test.example",
 		"LAMBDADB_PROJECT_NAME=migration-ci",
-		"LAMBDADB_SMOKE_SECRET_ARN=" + secretARN,
-		"LAMBDADB_PROJECT_API_KEY=stale-key",
+		"LAMBDADB_PROJECT_API_KEY= synthetic%test-key\n",
 		"PATH=/bin",
 		"GITHUB_ACTIONS=true",
 	}
@@ -36,60 +33,36 @@ var passingRun = goTestEvents(
 	`{"Action":"pass"}`,
 )
 
-// fakeCommands returns the secret for aws and goOutput for go, then the result.
-func fakeCommands(t *testing.T, secret, goOutput string, goErr error, calls *[]string) commandRunner {
-	return func(name string, args, env []string, stdout, stderr io.Writer) error {
+// fakeGo writes goOutput for go test and returns goErr. It runs no other command.
+func fakeGo(t *testing.T, goOutput string, goErr error, calls *[]string) commandRunner {
+	return func(name string, args, _ []string, stdout, _ io.Writer) error {
 		*calls = append(*calls, name)
-		switch name {
-		case "aws":
-			want := []string{"secretsmanager", "get-secret-value", "--region", "ap-northeast-2",
-				"--secret-id", secretARN, "--query", "SecretString", "--output", "text"}
-			if !reflect.DeepEqual(args, want) {
-				t.Errorf("aws args = %q, want %q", args, want)
-			}
-			if stderr != io.Discard {
-				t.Error("aws stderr must be discarded")
-			}
-			io.WriteString(stdout, secret)
-			return nil
-		case "go":
-			for _, value := range secretValues(secret) {
-				if slices.ContainsFunc(args, func(arg string) bool { return strings.Contains(arg, value) }) {
-					t.Error("go test arguments contain the key")
-				}
-			}
-			io.WriteString(stdout, goOutput)
-			return goErr
+		if name != "go" {
+			t.Fatalf("unexpected command %s", name)
 		}
-		t.Fatalf("unexpected command %s", name)
-		return nil
+		if slices.ContainsFunc(args, func(arg string) bool { return strings.Contains(arg, "synthetic") }) {
+			t.Error("go test arguments contain the key")
+		}
+		io.WriteString(stdout, goOutput)
+		return goErr
 	}
 }
 
-func secretValues(secret string) []string {
-	if key := strings.TrimSpace(secret); key != "" {
-		return []string{key}
-	}
-	return nil
-}
-
-func TestRunPassesMaskedKeyOnlyToTheGoTestEnvironment(t *testing.T) {
+func TestRunPassesTheKeyOnlyInTheGoTestEnvironment(t *testing.T) {
 	environ := smokeEnv()
 	before := slices.Clone(environ)
 	var childEnv, args []string
 	var calls []string
-	commands := fakeCommands(t, "synthetic%test-key\n", passingRun, nil, &calls)
+	commands := fakeGo(t, passingRun, nil, &calls)
 	var stdout bytes.Buffer
 	err := run(environ, func(name string, a, env []string, out, errOut io.Writer) error {
-		if name == "go" {
-			childEnv, args = env, a
-		}
+		childEnv, args = env, a
 		return commands(name, a, env, out, errOut)
 	}, &stdout, io.Discard)
 	if err != nil {
 		t.Fatalf("run() error = %v", err)
 	}
-	if !reflect.DeepEqual(calls, []string{"aws", "go"}) {
+	if !reflect.DeepEqual(calls, []string{"go"}) {
 		t.Fatalf("commands = %v", calls)
 	}
 	wantArgs := []string{"test", "./integration_tests", "-run", "^TestFixtureSourcesToLambdaDBLive$", "-count=1", "-timeout=30m", "-json"}
@@ -101,63 +74,38 @@ func TestRunPassesMaskedKeyOnlyToTheGoTestEnvironment(t *testing.T) {
 			t.Errorf("child env missing %q", entry)
 		}
 	}
-	if slices.Contains(childEnv, "LAMBDADB_PROJECT_API_KEY=stale-key") {
-		t.Error("child env kept the inherited project key")
+	if n := len(slices.DeleteFunc(slices.Clone(childEnv), func(e string) bool { return !strings.HasPrefix(e, "LAMBDADB_PROJECT_API_KEY=") })); n != 1 {
+		t.Errorf("child env has %d project keys, want 1", n)
 	}
 	if !reflect.DeepEqual(environ, before) {
 		t.Error("run() changed the parent environment")
 	}
-	output := stdout.String()
-	if !strings.HasPrefix(output, "::add-mask::synthetic%25test-key\n") {
-		t.Fatalf("output = %q, want the mask command before test output", output)
-	}
-	if strings.Count(output, "synthetic%test-key") != 0 || !strings.Contains(output, "=== RUN   TestFixtureSourcesToLambdaDBLive\n") {
-		t.Fatalf("output = %q, want only the masked key and decoded test output", output)
-	}
-}
-
-func TestRunDoesNotPrintTheKeyOutsideGitHubActions(t *testing.T) {
-	env := slices.DeleteFunc(smokeEnv(), func(entry string) bool { return strings.HasPrefix(entry, "GITHUB_ACTIONS=") })
-	var calls []string
-	var stdout bytes.Buffer
-	if err := run(env, fakeCommands(t, "synthetic-key\n", passingRun, nil, &calls), &stdout, io.Discard); err != nil {
-		t.Fatalf("run() error = %v", err)
-	}
-	if strings.Contains(stdout.String(), "synthetic-key") || strings.Contains(stdout.String(), "::add-mask::") {
-		t.Fatalf("output = %q, want no key or mask command", stdout.String())
+	// Actions masks the Environment secret, so the runner prints no mask command or key.
+	if output := stdout.String(); output != "=== RUN   TestFixtureSourcesToLambdaDBLive\n" {
+		t.Fatalf("output = %q, want only the decoded test output", output)
 	}
 }
 
 func TestRunRejectsMissingConfigurationAndKeysBeforeTesting(t *testing.T) {
 	for _, name := range requiredConfig {
 		absent := slices.DeleteFunc(smokeEnv(), func(entry string) bool { return strings.HasPrefix(entry, name+"=") })
-		for _, env := range [][]string{absent, append(slices.Clone(absent), name+"= ")} {
+		for _, env := range [][]string{absent, append(slices.Clone(absent), name+"="), append(slices.Clone(absent), name+"= \n")} {
 			var calls []string
-			err := run(env, fakeCommands(t, "key", passingRun, nil, &calls), io.Discard, io.Discard)
+			err := run(env, fakeGo(t, passingRun, nil, &calls), io.Discard, io.Discard)
 			if err == nil || err.Error() != "missing smoke configuration: "+name || len(calls) != 0 {
 				t.Errorf("%s: run() error = %v, commands = %v", name, err, calls)
 			}
 		}
 	}
 
-	failingAWS := func(name string, _, _ []string, _, stderr io.Writer) error {
-		if name != "aws" {
-			t.Fatal("must not start the smoke tests")
-		}
-		io.WriteString(stderr, "sensitive output")
-		return errors.New("sensitive output")
-	}
-	err := run(smokeEnv(), failingAWS, io.Discard, io.Discard)
-	if err == nil || err.Error() != "unable to read the smoke project key from Secrets Manager" {
-		t.Fatalf("run() error = %v", err)
-	}
-
-	for _, secret := range []string{"", "None\n", "key\nother-key\n"} {
+	for _, key := range []string{"key\nother-key", "key\rother-key"} {
+		env := append(slices.DeleteFunc(smokeEnv(), func(entry string) bool { return strings.HasPrefix(entry, "LAMBDADB_PROJECT_API_KEY=") }),
+			"LAMBDADB_PROJECT_API_KEY="+key)
 		var calls []string
 		var stdout bytes.Buffer
-		err := run(smokeEnv(), fakeCommands(t, secret, passingRun, nil, &calls), &stdout, io.Discard)
-		if err == nil || !strings.Contains(err.Error(), "single project API key") || !reflect.DeepEqual(calls, []string{"aws"}) || stdout.Len() != 0 {
-			t.Errorf("secret %q: run() error = %v, commands = %v, output = %q", secret, err, calls, stdout.String())
+		err := run(env, fakeGo(t, passingRun, nil, &calls), &stdout, io.Discard)
+		if err == nil || err.Error() != "expected a single project API key" || len(calls) != 0 || stdout.Len() != 0 {
+			t.Errorf("key %q: run() error = %v, commands = %v, output = %q", key, err, calls, stdout.String())
 		}
 	}
 }
@@ -193,7 +141,7 @@ func TestRunFailsUnlessTheLiveTestRanAndPassed(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			var calls []string
-			err := run(smokeEnv(), fakeCommands(t, "synthetic-key", tc.output, tc.err, &calls), io.Discard, io.Discard)
+			err := run(smokeEnv(), fakeGo(t, tc.output, tc.err, &calls), io.Discard, io.Discard)
 			if err == nil || err.Error() != tc.want {
 				t.Fatalf("run() error = %v, want %q", err, tc.want)
 			}
