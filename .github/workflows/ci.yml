@@ -76,3 +76,5 @@ jobs:
     uses: ./.github/workflows/live-smoke.yml
     with:
       environment: dev
+    # A called workflow sees its Environment's secrets only when the caller inherits secrets.
+    secrets: inherit

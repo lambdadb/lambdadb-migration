@@ -36,6 +36,8 @@ jobs:
     uses: ./.github/workflows/live-smoke.yml
     with:
       environment: prod
+    # A called workflow sees its Environment's secrets only when the caller inherits secrets.
+    secrets: inherit
 
   goreleaser:
     name: Publish release

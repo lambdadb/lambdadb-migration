@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -128,6 +129,12 @@ func TestLiveSmokeReadsTheKeyFromTheSelectedEnvironment(t *testing.T) {
 	}
 	if strings.Count(source, "secrets.") != 1 || !strings.Contains(source, "LAMBDADB_PROJECT_API_KEY: ${{ secrets.LAMBDADB_PROJECT_API_KEY }}") {
 		t.Error("live-smoke.yml must read only LAMBDADB_PROJECT_API_KEY from secrets")
+	}
+	for _, name := range []string{"ci.yml", "release.yml", "release-verification.yml"} {
+		// Without inherited secrets the called smoke job sees an empty key.
+		if _, text := readWorkflow(t, name); !regexp.MustCompile(`uses: \./\.github/workflows/live-smoke\.yml\n(?: {4}.*\n)*? {4}secrets: inherit\n`).MatchString(text) {
+			t.Errorf("%s must call live-smoke.yml with secrets: inherit", name)
+		}
 	}
 	for _, name := range []string{"ci.yml", "release.yml", "release-verification.yml", "live-smoke.yml"} {
 		_, text := readWorkflow(t, name)

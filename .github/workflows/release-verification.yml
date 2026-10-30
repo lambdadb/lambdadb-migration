@@ -53,3 +53,5 @@ jobs:
     with:
       environment: prod
       ref: ${{ needs.resolve.outputs.sha }}
+    # A called workflow sees its Environment's secrets only when the caller inherits secrets.
+    secrets: inherit
