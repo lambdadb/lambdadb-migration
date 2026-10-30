@@ -248,7 +248,7 @@ Elasticsearch point-in-time IDs can expire. If a resumed migration fails because
 ## Text Analyzer Mappings
 
 Text indexes support the 49 fixed presets from LambdaDB server merge
-`55d888299fee44466326a9db8016af9811ade13b` (PR #437), retained in Go SDK v0.7.2:
+`55d888299fee44466326a9db8016af9811ade13b` (PR #437), retained in Go SDK v0.8.0:
 
 ```text
 standard english korean japanese arabic chinese cjk french german hindi
@@ -332,7 +332,7 @@ Useful migration safety flags:
 
 Generated inventory mappings set `target.createCollection: true` by default, so the migration creates the LambdaDB collection when it is missing. Use `--migration.create-collection=false` to require the target collection to exist, or `--migration.create-collection=true` to override a mapping file that has collection creation disabled.
 
-The target uses LambdaDB Go SDK `v0.7.2`. Collection creation returns HTTP 201 with collection metadata; the current API has no `collectionStatus` readiness field to poll. Transient write errors use the configured retry policy. Bulk uploads forward the signed headers returned by LambdaDB (including `If-None-Match: *`) and send `Content-Type: application/json`. A retried upload obtains a fresh URL; checkpoints advance only after every write for a source batch succeeds.
+The target uses LambdaDB Go SDK `v0.8.0`. Collection creation returns HTTP 201 with collection metadata; the current API has no `collectionStatus` readiness field to poll. Transient write errors use the configured retry policy. Bulk uploads forward the signed headers returned by LambdaDB (including `If-None-Match: *`) and send `Content-Type: application/json`. A retried upload obtains a fresh URL; checkpoints advance only after every write for a source batch succeeds.
 
 Checkpoints record source exhaustion separately from validation success. Re-running a completed checkpoint skips source reads and writes, while requested validation and cleanup still run. Validation-enabled migrations retain up to `--migration.validation-sample-size` sample documents in the local checkpoint so failed validation can be retried without re-uploading; checkpoint files use owner-only permissions. If a completed checkpoint has no saved samples, requesting sample validation requires `--migration.restart` (or sample size `0` for count-only validation).
 
@@ -451,9 +451,10 @@ payload:
 Go SDK [v0.7.0](https://github.com/lambdadb/go-lambdadb/releases/tag/v0.7.0)
 (tag commit `fd3000bcb4353b3d6ed23fcca4f111955b36b33e`) introduced the native
 embedding contract pinned to backend `9072a1bc8925954369a887f558f1eaf387b7ea0e`.
-The target now uses [v0.7.2](https://github.com/lambdadb/go-lambdadb/releases/tag/v0.7.2),
-which preserves these request types; see its [current API contract](https://github.com/lambdadb/go-lambdadb/blob/v0.7.2/docs/api-contract.md)
-for updated server limits and constraints.
+The target now uses [v0.8.0](https://github.com/lambdadb/go-lambdadb/releases/tag/v0.8.0),
+which adds the `cohere` provider and ordered `sources` from backend
+`1c3e7d453cca296a7b2af85a375b4c5016504101`; see its [current API contract](https://github.com/lambdadb/go-lambdadb/blob/v0.8.0/docs/api-contract.md)
+for server limits and constraints.
 To explicitly generate an additional vector from migrated text, add this to a
 reviewed mapping and select `--migration.write-mode upsert` (JSON input is also
 supported):
@@ -477,6 +478,35 @@ payload:
 `embedding.sourceField` names the **destination** field after payload renaming
 and normalization. The CLI preserves it literally. Omitted `managedEmbedding`
 enables native embeddings; no flag, dimensions or similarity default is inserted.
+
+Instead of `sourceField`, `embedding.sources` lists ordered `{field, type}`
+inputs combined into one vector. Each `field` is a destination path (dotted
+paths select values inside stored objects) and `type` is `text` or `image`.
+OpenAI takes exactly one text source; Cohere (`embed-v5.0-pro`,
+`embed-v5.0-fast`) takes up to 16 text or image sources, where an image field
+holds a public HTTPS URL or supported data URI, or a flat array of them:
+
+```yaml
+payload:
+  indexConfigs:
+    generated_vector:
+      type: vector
+      embedding:
+        provider: cohere
+        model: embed-v5.0-fast
+        dimensions: 1024
+        sources:
+          - field: body
+            type: text
+          - field: image_url
+            type: image
+```
+
+Set exactly one of `sourceField` or `sources`; the CLI omits an empty
+`sourceField` and leaves that choice, source types, paths and image limits to
+server validation. Cohere dimensions are 256, 512, 768, 1024, 1536 or 2048
+(default 2048).
+
 For explicit dimensions or similarity, put them inside `embedding`:
 
 ```json
@@ -494,7 +524,8 @@ For explicit dimensions or similarity, put them inside `embedding`:
 
 Legacy `managedEmbedding: true` is accepted and preserved, including normalized
 server metadata. Explicit `managedEmbedding: false` with `embedding`, top-level
-native dimensions/similarity and unknown options are rejected. Structural errors
+native dimensions/similarity and unknown options, including keys other than
+`field`/`type` in a `sources` entry, are rejected. Structural errors
 are reported during mapping validation and schema construction; model and
 source-field compatibility remain server validations with SDK error types intact.
 
@@ -508,21 +539,24 @@ this tool has no schema update path.
 
 **Native generation is an explicit migration choice.** On a compatible backend,
 regular upsert of text to a collection with a native field can invoke the provider,
-including retries. The pinned backend rejects bulk upsert for collections with
-native embedding fields; select `--migration.write-mode upsert` explicitly.
-The CLI retains its existing bulk default and propagates the server rejection. Native fields reject directly supplied vectors; keep
-stored vectors in ordinary vector fields to preserve migration fidelity. This
-also applies to pre-existing target collections, whose schema the CLI does not
-reconcile. The CLI does not suppress generation or promise provider-call
-idempotency. Count/sample validation checks migrated fields; it does not validate
+including retries. Bulk upload never generates native embeddings: it accepts a
+native collection only when each document with a present source also supplies
+that field's vector, which migrated documents do not, so select
+`--migration.write-mode upsert` explicitly. The CLI retains its existing bulk
+default and propagates the server rejection. The current API also accepts
+caller-supplied vectors on native fields, but this CLI does not map a stored
+source vector into a native field: the collision check above still applies, so
+keep stored vectors in ordinary vector fields. The CLI does not reconcile the
+schema of pre-existing target collections, suppress generation or promise
+provider-call idempotency. Count/sample validation checks migrated fields; it does not validate
 the quality of additional generated vectors.
 
 Query-overlap validation still uses caller-vector KNN and sparse retrieval. It
 omits top-level `candidateSize` and rerank, preserves server result order, and
-cannot validate a native field via `queryVector`. There are no Bayesian queries,
+does not query generated native fields. There are no Bayesian queries,
 rerank requests or score-processing paths to migrate here; Bayesian is not a
 migration default. For separate SDK queries, follow the
-[Bayesian/native embedding guide](https://github.com/lambdadb/go-lambdadb/blob/v0.7.2/docs/bayesian-native-embeddings.md).
+[Bayesian/native embedding guide](https://github.com/lambdadb/go-lambdadb/blob/v0.8.0/docs/bayesian-native-embeddings.md).
 
 The SDK's dev validation does not establish this CLI's target deployment. Before
 live migration, verify the actual running backend revision and compatible schema.
@@ -652,7 +686,11 @@ into a temporary collection in a real LambdaDB project, checks the validation
 report, the collection schema, every document's content, and `numDocs`, then
 deletes the collection and verifies that it is gone. The
 `pinecone_dotproduct_rejected` case instead requires mapping validation to fail
-and checks that no collection was created. Vector fixtures use 64 dimensions,
+and checks that no collection was created. The
+`qdrant_cohere_native_sources_upsert` case adds a Cohere native embedding field
+with two ordered text `sources`; the server calls Cohere for each document, and
+the case checks the stored schema and that each document has a generated vector
+of the requested dimensions. Vector fixtures use 64 dimensions,
 the LambdaDB minimum.
 
 Run it locally against a project where temporary collections may be created

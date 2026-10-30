@@ -130,6 +130,32 @@ func TestFixtureSourcesToLambdaDBLive(t *testing.T) {
 			},
 		},
 		{
+			// Native embeddings from ordered sources: the server calls Cohere for
+			// each upserted document, so only the generated vector shape is checked.
+			name:      "qdrant_cohere_native_sources_upsert",
+			slug:      "qcoh",
+			source:    qdrantFixtureSource("additional_payload_index_types", additionalPayloadIndexTypesFixture()),
+			writeMode: config.WriteModeUpsert,
+			batchSize: 2,
+			mapping:   cohereNativeSourcesMapping,
+			wantIndexes: map[string]map[string]any{
+				"dense":        vector("cosine"),
+				"body":         {"type": "text", "analyzers": []any{"standard"}},
+				"score":        indexType("double"),
+				"published_at": indexType("datetime"),
+				"is_public":    indexType("boolean"),
+				"attributes":   indexType("object"),
+				"generated": {"type": "vector", "managedEmbedding": true, "embedding": map[string]any{
+					"provider": "cohere", "model": "embed-v5.0-fast", "dimensions": float64(cohereFixtureDims), "similarity": "cosine",
+					"sources": []any{map[string]any{"field": "body", "type": "text"}, map[string]any{"field": "attributes.section", "type": "text"}},
+				}},
+			},
+			wantDocs: map[string]map[string]any{
+				"501": {"id": "501", "dense": unit(0.1, 0.2, 0.3), "body": "first searchable body", "score": 0.95, "published_at": "2026-05-10T00:00:00Z", "is_public": true, "attributes": map[string]any{"section": "docs", "rank": 1.0}, "generated": generatedVector(cohereFixtureDims)},
+				"502": {"id": "502", "dense": unit(0.4, 0.5, 0.6), "body": "second searchable body", "score": 0.87, "published_at": "2026-05-11T00:00:00Z", "is_public": false, "attributes": map[string]any{"section": "guides", "rank": 2.0}, "generated": generatedVector(cohereFixtureDims)},
+			},
+		},
+		{
 			name:        "qdrant_unnamed_dense_bulk",
 			slug:        "qudb",
 			source:      qdrantFixtureSource("unnamed_dense", unnamedDenseFixture()),
@@ -407,10 +433,49 @@ func waitForLambdaDBCollectionAbsent(ctx context.Context, client *sdk.Client, co
 	}
 }
 
+const cohereFixtureDims = 256
+
+// cohereNativeSourcesMapping adds a Cohere native embedding field generated
+// from two ordered text sources, one of them a nested stored path.
+func cohereNativeSourcesMapping(targetCollection string) config.MappingConfig {
+	mapping := additionalPayloadIndexTypesMapping(targetCollection)
+	mapping.Payload.IndexConfigs["generated"] = map[string]any{
+		"type": "vector",
+		"embedding": map[string]any{
+			"provider":   "cohere",
+			"model":      "embed-v5.0-fast",
+			"dimensions": cohereFixtureDims,
+			"sources": []map[string]any{
+				{"field": "body", "type": "text"},
+				{"field": "attributes.section", "type": "text"},
+			},
+		},
+	}
+	return mapping
+}
+
+// generatedVector expects a server-generated vector of the given dimensions,
+// whose values depend on the embedding model.
+type generatedVector int
+
 // jsonValuesEqual compares an expected value with a decoded JSON value,
 // allowing float32 rounding for numbers.
 func jsonValuesEqual(want, got any) bool {
 	switch w := want.(type) {
+	case generatedVector:
+		g, ok := got.([]any)
+		if !ok || len(g) != int(w) {
+			return false
+		}
+		nonzero := false
+		for _, value := range g {
+			number, ok := value.(float64)
+			if !ok {
+				return false
+			}
+			nonzero = nonzero || number != 0
+		}
+		return nonzero
 	case map[string]any:
 		g, ok := got.(map[string]any)
 		if !ok || len(g) != len(w) {

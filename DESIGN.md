@@ -202,7 +202,7 @@ Important LambdaDB constraints from docs and SDK:
 - Vector similarity: `cosine` or `euclidean`.
 - Document IDs are strings and max length is 512.
 - Bulk upsert is asynchronous, so validation must poll or wait before expecting `numDocs` to match.
-- Bulk upsert is not supported for collections with managed embedding vector fields.
+- Bulk upsert never generates managed embeddings. It accepts managed embedding collections only when every document with a present source also supplies that field's vector, so migrations that rely on generation must use upsert.
 
 ## Qdrant To LambdaDB Mapping
 

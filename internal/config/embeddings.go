@@ -38,9 +38,22 @@ func ParseEmbeddingIndexConfig(index map[string]any) (components.IndexConfigsUni
 	_ = json.Unmarshal(fields["embedding"], &embedding)
 	for key := range embedding {
 		switch key {
-		case "provider", "model", "sourceField", "dimensions", "similarity":
+		case "provider", "model", "sourceField", "sources", "dimensions", "similarity":
 		default:
 			unsupported = append(unsupported, "embedding."+key)
+		}
+	}
+	// The SDK decoder ignores unknown source keys, so check them here. Source
+	// paths, types and the sourceField/sources choice remain server validations.
+	var sources []map[string]json.RawMessage
+	_ = json.Unmarshal(embedding["sources"], &sources)
+	for i, source := range sources {
+		for key := range source {
+			switch key {
+			case "field", "type":
+			default:
+				unsupported = append(unsupported, fmt.Sprintf("embedding.sources[%d].%s", i, key))
+			}
 		}
 	}
 	if len(unsupported) > 0 {
