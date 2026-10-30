@@ -30,6 +30,14 @@ type workflow struct {
 
 const liveSmokeAction = "./.github/actions/live-smoke"
 
+// Release verification loads the action from its own revision, because the
+// verified commit may predate it.
+const verificationSmokeAction = "./.smoke-action/.github/actions/live-smoke"
+
+func isSmokeAction(uses string) bool {
+	return uses == liveSmokeAction || uses == verificationSmokeAction
+}
+
 func readFile(t *testing.T, path ...string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(append([]string{"..", ".."}, path...)...))
@@ -54,7 +62,7 @@ func smokeStep(t *testing.T, wf workflow, jobName string) workflowStep {
 	t.Helper()
 	var found []workflowStep
 	for _, step := range wf.Jobs[jobName].Steps {
-		if step.Uses == liveSmokeAction {
+		if isSmokeAction(step.Uses) {
 			found = append(found, step)
 		}
 	}
@@ -79,7 +87,7 @@ func TestWorkflowsSelectTheLiveSmokeEnvironment(t *testing.T) {
 		wf, _ := readWorkflow(t, name)
 		for jobName, job := range wf.Jobs {
 			for _, step := range job.Steps {
-				if step.Uses == liveSmokeAction {
+				if isSmokeAction(step.Uses) {
 					callers++
 					if jobName != "live-smoke" {
 						t.Errorf("%s runs the live smoke in job %s, want live-smoke", name, jobName)
@@ -124,9 +132,17 @@ func TestWorkflowsSelectTheLiveSmokeEnvironment(t *testing.T) {
 	if _, ok := verification.On["workflow_dispatch"]; !ok || len(verification.On) != 1 {
 		t.Errorf("release-verification.yml triggers = %v, want workflow_dispatch only", verification.On)
 	}
-	checkout := verification.Jobs["live-smoke"].Steps[0]
-	if !strings.HasPrefix(checkout.Uses, "actions/checkout@") || checkout.With["ref"] != "${{ needs.resolve.outputs.sha }}" {
-		t.Errorf("release-verification.yml live-smoke must first check out the resolved main commit, got %+v", checkout)
+	steps := verification.Jobs["live-smoke"].Steps
+	if len(steps) != 3 || !strings.HasPrefix(steps[0].Uses, "actions/checkout@") || steps[0].With["ref"] != "${{ needs.resolve.outputs.sha }}" ||
+		!strings.HasPrefix(steps[1].Uses, "actions/checkout@") || steps[1].With["ref"] != "" || steps[1].With["path"] != ".smoke-action" ||
+		steps[2].Uses != verificationSmokeAction {
+		t.Errorf("release-verification.yml live-smoke must check out the resolved commit, then load the action from its own revision; got %+v", steps)
+	}
+	for _, name := range []string{"ci.yml", "release.yml"} {
+		wf, _ := readWorkflow(t, name)
+		if got := smokeStep(t, wf, "live-smoke").Uses; got != liveSmokeAction {
+			t.Errorf("%s live smoke uses %q, want %q", name, got, liveSmokeAction)
+		}
 	}
 }
 

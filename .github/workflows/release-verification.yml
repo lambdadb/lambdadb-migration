@@ -53,13 +53,22 @@ jobs:
     environment: prod
     timeout-minutes: 40
     steps:
-      - name: Check out repository
+      - name: Check out the commit to verify
         uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.sha }}
 
+      # The verified commit may predate the smoke action, so load the action
+      # from this workflow's revision, beside the verified tree.
+      - name: Check out the smoke action
+        uses: actions/checkout@v7
+        with:
+          path: .smoke-action
+          sparse-checkout: .github/actions/live-smoke
+          sparse-checkout-cone-mode: false
+
       - name: Run deployed fixture live smoke
-        uses: ./.github/actions/live-smoke
+        uses: ./.smoke-action/.github/actions/live-smoke
         with:
           base-url: ${{ vars.LAMBDADB_PROD_BASE_URL }}
           project-name: ${{ vars.LAMBDADB_PROD_PROJECT_NAME }}
