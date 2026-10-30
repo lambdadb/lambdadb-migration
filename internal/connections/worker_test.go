@@ -608,3 +608,59 @@ func TestWorkerRetainedTransactionAppliesAfterSlotLossAndResyncs(t *testing.T) {
 		t.Fatal("slot loss recovery replaced the collection or lost documents")
 	}
 }
+
+// The durable initial cut finishes its plan after the slot is dropped; only an
+// explicit resync replaces the slot afterwards.
+func TestWorkerRetainedCutAppliesAfterSlotLossAndResyncs(t *testing.T) {
+	f := newWorkerFixture(t, "continuous")
+	// Stop after the first of two initial documents so the cut plan stays open.
+	firstAccepted := make(chan struct{})
+	f.mu.Lock()
+	f.afterMutation = func() {
+		f.afterMutation = nil
+		close(firstAccepted)
+	}
+	f.mu.Unlock()
+	cancel, done := f.worker(t, true)
+	select {
+	case <-firstAccepted:
+		cancel()
+	case <-time.After(10 * time.Second):
+		t.Fatal("initial cut never reached the target")
+	}
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("worker did not stop")
+	}
+	j, err := OpenJournal(filepath.Join(f.dir, "connection.db"), protocol.Fingerprint(f.approved.Binding), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := j.Load()
+	_ = j.Close()
+	if err != nil || state.Plan == nil || state.Plan.Cursor != 1 || state.Plan.Total != 2 || state.Pending != nil {
+		t.Fatalf("fixture did not retain a half-applied cut plan without a pending intent: %+v %v", state.Plan, err)
+	}
+	hash := sha256.Sum256([]byte(f.approved.Binding.ConnectionID))
+	if _, err = f.db.Exec(context.Background(), `SELECT pg_drop_replication_slot($1)`, "ldb_"+hex.EncodeToString(hash[:16])); err != nil {
+		t.Fatal(err)
+	}
+	cancel, done = f.worker(t, false)
+	f.await(t, func() bool {
+		return f.phaseIs("action_required") && f.observation.Observation.ReasonCode == "source_setup_required" && len(f.docs) == 2
+	})
+	f.command("running", true)
+	f.await(t, func() bool { return f.phaseIs("running") })
+	f.sql(t, "UPDATE TABLE SET title='after-resync' WHERE pk=1")
+	f.await(t, func() bool { return string(f.docs["1"]["title"]) == `"after-resync"` })
+	stopWorker(t, cancel, done)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.creates != 1 || len(f.docs) != 2 {
+		t.Fatal("slot loss recovery replaced the collection or lost documents")
+	}
+}

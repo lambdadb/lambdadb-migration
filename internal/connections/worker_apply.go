@@ -180,8 +180,10 @@ func (w *Worker) prepareAndApply(ctx context.Context, a protocol.Approved, selec
 				return err
 			}
 		}
+		// The prepared cut is durable; its application finishes even after the
+		// slot was dropped. Resume in execute still decides whether streaming continues.
 		if pending.Continuous != nil {
-			if err = capture.ValidateCut(ctx, dsn, pending.Continuous); err != nil {
+			if err = capture.ValidateRetained(ctx, dsn, pending.Continuous); err != nil {
 				return errors.New("source_setup_required")
 			}
 			rows = pending.Continuous.Rows
@@ -190,8 +192,11 @@ func (w *Worker) prepareAndApply(ctx context.Context, a protocol.Approved, selec
 			rows = pending.Snapshot.Rows
 		}
 	} else if a.Binding.Mode == "continuous" {
-		state, e := capture.Resume(ctx, dsn)
+		state, e := w.source.Load()
 		if e != nil {
+			return e
+		}
+		if e = capture.ValidateRetained(ctx, dsn, state); e != nil {
 			return errors.New("source_setup_required")
 		}
 		rows = state.Rows
