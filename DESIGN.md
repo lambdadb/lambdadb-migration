@@ -6,6 +6,57 @@
 
 This project should be a new LambdaDB-owned repository, not a public GitHub fork of `qdrant/migration`. We can reuse Apache-2.0 licensed code where it makes sense, but the target-side architecture should be LambdaDB-native rather than a Qdrant writer with names changed.
 
+## Current managed connections, October 27, 2026
+
+The current managed execution path is `cmd/connection-worker`,
+`Dockerfile.connection-worker` and `internal/connections`; see
+[the maintained connection contract](docs/connections.md). It uses one fixed
+ordinary customer collection with snapshot/continuous modes. The central backend
+owns management, while regional state and source capture remain here. No per-batch
+central call, engine ingestion metadata, EFS receipt facility or sealing API is
+required. Row reconstruction still uses the PostgreSQL capture implementation.
+
+Persist target intent and transmission state before sending. An uncertain outcome
+stops execution across restart and management commands; no automatic retry,
+readback-based recovery or replacement collection is used. Only an intent that
+never began transmission can continue automatically. The previous ordered engine
+experiment and generic idempotency prototype are deferred pending replacement-WAL
+acceptance design. Current journal format rejects prior ordered-ingestion state.
+
+The October 25 entry below describes the historical `cdc-worker` experiment and
+its generation-based recovery. That explicit legacy path does not define the
+current managed connection contract. The one-time migration CLI retains its own
+retry/checkpoint behavior and is unaffected by the managed-worker policy.
+
+## Managed CDC ownership, October 25, 2026
+
+Steven approved consolidating data-movement execution in this existing repository.
+The migration CLI retains its one-time copy behavior. A separate `cmd/cdc-worker`
+executable and `Dockerfile.cdc-worker` now own the bounded PostgreSQL correctness
+spike, implemented in `internal/postgrescdc` with its own recovery tests. This is a
+local implementation, not a released connector, deployed worker or new PostgreSQL
+CLI subcommand. See [the CDC contract and limits](docs/postgresql-cdc.md).
+
+`lambdadb-backend` retains central connection management, authorization, desired
+state, observed status and regional infrastructure/deployment configuration. It
+selects a versioned worker image built here; the repositories do not import each
+other as Go modules or invoke the migration CLI for each CDC batch. A managed
+deployment must pin the worker image by digest. Registry publication and production
+IaC remain separate, unperformed steps.
+
+Worker execution defaults to the target region. Durable row images, checkpoints,
+replay and coordination belong in that region; central status is not recovery
+authority. PostgreSQL snapshot acquisition and its associated WAL start boundary
+stay in one connector lifecycle. Do not split the baseline into an independent
+CLI migration followed by an unrelated stream start.
+
+The cursor-based `Source`, one-time migration checkpoint and CLI retry/bulk-write
+policy below remain specific to one-time migration. CDC needs transaction end LSNs,
+delete semantics, recoverable TOAST/PK reconstruction and generation isolation.
+It does not reuse those interfaces or change the existing CLI's behavior. Extract
+shared mapping/validation components only when their actual contracts match; no
+general connector framework or public library is introduced by this move.
+
 ## Reference Inputs
 
 - Qdrant migration tool: https://github.com/qdrant/migration
@@ -27,7 +78,8 @@ This project should be a new LambdaDB-owned repository, not a public GitHub fork
 
 ## Non-Goals For V1
 
-- Live CDC or continuous replication.
+- Live CDC or continuous replication in the migration CLI. The separate managed
+  CDC worker described above is a later repository scope, not part of CLI V1.
 - Automatic query rewriting for every source SDK.
 - Fully automatic schema inference for every payload field.
 - Qdrant multi-vector or ColBERT matrix migration without explicit user configuration.

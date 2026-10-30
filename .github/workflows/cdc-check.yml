@@ -1,0 +1,70 @@
+name: CDC correctness spike
+on:
+  pull_request:
+    paths:
+      - "internal/postgrescdc/**"
+      - "cmd/cdc-worker/**"
+      - "cmd/connection-worker/**"
+      - "cmd/connection-state/**"
+      - "internal/connections/**"
+      - "internal/statefile/**"
+      - "Dockerfile.connection-worker"
+      - "Dockerfile.connection-s3-probe"
+      - "Dockerfile.connection-fault-probe"
+      - "Dockerfile.connection-crash-probe"
+      - "Dockerfile.connection-volume-probe"
+      - "scripts/cdc-test-*"
+      - "Dockerfile.cdc-worker"
+      - "go.mod"
+      - "go.sum"
+      - ".dockerignore"
+      - ".github/workflows/cdc-check.yml"
+  push:
+    branches: [main]
+    paths:
+      - "internal/postgrescdc/**"
+      - "cmd/cdc-worker/**"
+      - "cmd/connection-worker/**"
+      - "cmd/connection-state/**"
+      - "internal/connections/**"
+      - "internal/statefile/**"
+      - "Dockerfile.connection-worker"
+      - "Dockerfile.connection-s3-probe"
+      - "Dockerfile.connection-fault-probe"
+      - "Dockerfile.connection-crash-probe"
+      - "Dockerfile.connection-volume-probe"
+      - "scripts/cdc-test-*"
+      - "Dockerfile.cdc-worker"
+      - "go.mod"
+      - "go.sum"
+      - ".dockerignore"
+      - ".github/workflows/cdc-check.yml"
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - run: bash scripts/cdc-test-postgres.sh
+      - run: go vet ./...
+      - run: go build ./...
+      - run: docker build -f Dockerfile.cdc-worker -t lambdadb-cdc-worker:ci .
+      - run: docker run --rm lambdadb-cdc-worker:ci -help
+
+      - run: docker build -f Dockerfile.connection-worker -t lambdadb-connection-worker:ci .
+      - run: docker run --rm lambdadb-connection-worker:ci -help
+      - run: docker run --rm --entrypoint connection-state lambdadb-connection-worker:ci -help
+      - run: docker build --platform linux/amd64 -f Dockerfile.connection-s3-probe -t connection-s3-probe:ci .
+      - run: docker run --rm --network none connection-s3-probe:ci
+      - run: docker build --platform linux/amd64 -f Dockerfile.connection-volume-probe -t connection-volume-probe:ci .
+      - run: docker run --rm connection-volume-probe:ci '-test.run=^TestStateVolumeProbeLocal$'
+      - run: docker run --rm connection-volume-probe:ci '-test.run=^TestPartitionFault'
+      - run: docker build --platform linux/amd64 -f Dockerfile.connection-fault-probe -t connection-fault-probe:ci .
+      - run: docker run --rm connection-fault-probe:ci '-test.run=^Test(FaultSupervisor|StorageFault)' '-test.timeout=1m'
+      - run: docker build -f Dockerfile.connection-crash-probe -t connection-crash-probe:ci .
+      - run: docker run --rm --cap-add=SYS_PTRACE --env CONNECTION_TEST_COMMIT_CRASH=1 connection-crash-probe:ci '-test.run=^Test(CommitCrashAtDataAndMetadataSync|Journal|Inspection|StateArchive)' '-test.v' '-test.timeout=2m'

@@ -4,6 +4,12 @@ CLI tooling for migrating vector databases and search systems into LambdaDB.
 
 Supported sources include Qdrant, Pinecone Serverless, and Elasticsearch. LambdaDB is the only target.
 
+The repository also owns the separate [managed connection worker](docs/connections.md)
+and its correctness tests. Managed connection APIs and regional infrastructure stay
+in `lambdadb-backend`; the worker performs snapshot and continuous replication
+without per-batch central calls. PostgreSQL is not yet a migration CLI subcommand.
+The CDC executable/image is separate from the CLI and its release archives.
+
 ## Quickstart
 
 Install the latest release:
