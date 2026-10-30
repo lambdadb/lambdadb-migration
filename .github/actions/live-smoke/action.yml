@@ -1,0 +1,35 @@
+name: Fixture live smoke
+description: >-
+  Run the fixture live suite against the deployed LambdaDB environment of the
+  calling job. The caller checks out the commit to test and runs in the GitHub
+  Environment whose secret it passes as project-api-key.
+inputs:
+  base-url:
+    description: LambdaDB endpoint from the selected environment's Variable.
+    required: true
+  project-name:
+    description: Dedicated smoke project from the selected environment's Variable.
+    required: true
+  project-api-key:
+    description: The calling job's Environment secret LAMBDADB_PROJECT_API_KEY.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@v7
+      with:
+        go-version-file: go.mod
+        cache: true
+
+    # tools/livesmoke fails on a missing or blank value; it never falls back to
+    # the other environment.
+    - name: Run deployed fixture live smoke
+      shell: bash
+      env:
+        LAMBDADB_BASE_URL: ${{ inputs.base-url }}
+        LAMBDADB_PROJECT_NAME: ${{ inputs.project-name }}
+        LAMBDADB_PROJECT_API_KEY: ${{ inputs.project-api-key }}
+      run: |
+        echo "Live smoke target: $LAMBDADB_BASE_URL project $LAMBDADB_PROJECT_NAME at $(git rev-parse HEAD)"
+        go run ./tools/livesmoke

@@ -639,11 +639,11 @@ Deployed LambdaDB gates run the fixture live suite
 | Release verification (`workflow_dispatch` on `main`) | production |
 | `v*` tag push | production, before GoReleaser publishes |
 
-`.github/workflows/live-smoke.yml` is the shared workflow. Its `target` job maps
-the caller's environment to a Variable prefix, and its `smoke` job runs in the
-GitHub Environment of the same name (`dev` or `prod`). `go run ./tools/livesmoke`
-reads the project API key from the Environment secret `LAMBDADB_PROJECT_API_KEY`,
-which Actions masks in logs, and passes it to `go test` only through the
+Each gate is a `live-smoke` job that declares its GitHub Environment (`dev` or
+`prod`) and runs the shared composite action `.github/actions/live-smoke` with
+that environment's Variables and its Environment secret
+`LAMBDADB_PROJECT_API_KEY`, which Actions masks in logs. The action runs
+`go run ./tools/livesmoke`, which passes the key to `go test` only through the
 environment, never in arguments, files, or artifacts. The runner fails on
 missing configuration, a blank or multi-line key, a failed test, a skipped test
 or case, or a run that did not execute the live test.

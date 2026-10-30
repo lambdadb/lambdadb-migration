@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -31,11 +31,21 @@ jobs:
   live-smoke:
     name: Production live smoke
     needs: check-tag
-    permissions:
-      contents: read
-    uses: ./.github/workflows/live-smoke.yml
-    with:
-      environment: prod
+    runs-on: ubuntu-latest
+    # The Environment holds this repository's prod smoke key; its deployment
+    # policy admits only main and v* tags.
+    environment: prod
+    timeout-minutes: 40
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Run deployed fixture live smoke
+        uses: ./.github/actions/live-smoke
+        with:
+          base-url: ${{ vars.LAMBDADB_PROD_BASE_URL }}
+          project-name: ${{ vars.LAMBDADB_PROD_PROJECT_NAME }}
+          project-api-key: ${{ secrets.LAMBDADB_PROJECT_API_KEY }}
 
   goreleaser:
     name: Publish release
@@ -45,12 +55,12 @@ jobs:
       contents: write
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
