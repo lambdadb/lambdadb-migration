@@ -385,6 +385,11 @@ func (w *Worker) Run(ctx context.Context) error {
 			if fatal := w.storageError(); fatal != nil {
 				return fatal
 			}
+			// A cancelled parent context may deliver the job result before
+			// ctx.Done is selected; shutdown is not an execution failure.
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			if result == nil {
 				finished = key
 				retryDelay = 5 * time.Second
@@ -475,10 +480,6 @@ func (w *Worker) execute(ctx context.Context, a protocol.Approved) error {
 		return errors.New("state_invalid")
 	}
 	capture := &postgrescdc.Capture{Selection: postgrescdc.CaptureSelection{ConnectionID: a.Binding.ConnectionID, Region: a.Binding.Region, Schema: selection.Schema, Table: selection.Table, Publication: selection.Publication, Columns: selection.Columns}, Store: w.source, Authorize: w.authority}
-	d, err = w.data()
-	if err != nil {
-		return err
-	}
 	if a.Control.DesiredState == "disconnected" {
 		if err := w.phase("disconnecting", ""); err != nil {
 			return err
