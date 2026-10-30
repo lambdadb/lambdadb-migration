@@ -541,8 +541,8 @@ func TestWorkerStopsAfterRetainedHandleFailure(t *testing.T) {
 func TestWorkerDisconnectsNeverStartedContinuousSourceWithoutCredentials(t *testing.T) {
 	f := newWorkerFixture(t, "continuous")
 	f.mu.Lock()
-	// The source secret is unusable and no slot or bootstrap was ever acquired.
-	f.credentials = "not-a-credential"
+	// Neither secret resolves and no slot or bootstrap was ever acquired.
+	f.secretsUnavailable = true
 	f.approved.Control.DesiredState = "disconnected"
 	f.mu.Unlock()
 	cancel, done := f.worker(t, true)

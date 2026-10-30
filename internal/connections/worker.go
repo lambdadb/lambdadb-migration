@@ -466,15 +466,6 @@ func (w *Worker) execute(ctx context.Context, a protocol.Approved) error {
 	if d.Phase == "disconnected" && a.Control.DesiredState == "disconnected" {
 		return nil
 	}
-	targetKey, err := w.Secrets.Resolve(ctx, a.Binding.Region, a.Binding.Target.CredentialRef)
-	if err != nil {
-		return errors.New("target_unavailable")
-	}
-	target, err := NewAPITarget(a.Binding, targetKey)
-	if err != nil {
-		return errors.New("target_conflict")
-	}
-	target.client.Transport = w.Transport
 	var selection protocol.PostgresSelection
 	if protocol.Decode(bytes.NewReader(a.Binding.Source.Configuration), &selection) != nil {
 		return errors.New("state_invalid")
@@ -506,6 +497,16 @@ func (w *Worker) execute(ctx context.Context, a protocol.Approved) error {
 		}
 		return w.phase("disconnected", "")
 	}
+	// Disconnection above makes no target call; only execution needs the target.
+	targetKey, err := w.Secrets.Resolve(ctx, a.Binding.Region, a.Binding.Target.CredentialRef)
+	if err != nil {
+		return errors.New("target_unavailable")
+	}
+	target, err := NewAPITarget(a.Binding, targetKey)
+	if err != nil {
+		return errors.New("target_conflict")
+	}
+	target.client.Transport = w.Transport
 	if err := w.phase("validating", ""); err != nil {
 		return err
 	}
