@@ -190,6 +190,31 @@ func (c *Capture) ValidateCut(ctx context.Context, dsn string, state *State) err
 	return validateResume(ctx, sql, repl, config, state)
 }
 
+// ValidateRetained checks a retained decoded commit before its application plan
+// finishes. The source identity and projection must match; a dropped slot is
+// tolerated because the commit is already durable and streaming is re-validated
+// by Resume or replaced by Resnapshot.
+func (c *Capture) ValidateRetained(ctx context.Context, dsn string, state *State) error {
+	config, err := c.Selection.config()
+	if err != nil {
+		return err
+	}
+	if state == nil || !c.Selection.matches(state.Columns) {
+		return errors.New("source cut selection changed")
+	}
+	sql, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		return err
+	}
+	defer sql.Close(context.Background())
+	repl, err := replicationConn(ctx, dsn)
+	if err != nil {
+		return err
+	}
+	defer repl.Close(context.Background())
+	return validateRetained(ctx, sql, repl, config, state)
+}
+
 func (c *Capture) Stream(ctx context.Context, dsn string, apply func(context.Context, *State, *State) error, ready func()) error {
 	config, err := c.Selection.config()
 	if err != nil {

@@ -94,6 +94,10 @@ return value or a keepalive's advertised WAL end. Paused, blocked and disconnect
 workers do not generate heartbeats. Long transactions and outages can still retain
 WAL: monitor `restart_lsn`, retained bytes and slot validity, and configure an
 appropriate `max_slot_wal_keep_size` with a recovery plan for slot invalidation.
+A retained decoded commit still finishes its application plan after its slot was
+dropped, because that commit is already durable; the connection then stops with
+`source_setup_required` and only an explicit resync replaces the slot. An existing
+slot must still be inactive and not advanced past the retained position.
 Use default replica identity and retain the primary key in the publication. Row filters, multi-table publications and schema changes are
 rejected. The worker never creates or deletes a customer publication. The
 publication's exact projection is selected for the initial exported snapshot;

@@ -355,6 +355,23 @@ func readSnapshotRows(ctx context.Context, tx pgx.Tx, c Config, cols []Column) (
 }
 
 func validateResume(ctx context.Context, sql *pgx.Conn, repl *pgconn.PgConn, c Config, s *State) error {
+	if err := validateIdentity(ctx, sql, repl, c, s); err != nil {
+		return err
+	}
+	return validateSlot(ctx, sql, c, s, false)
+}
+
+// validateRetained accepts a dropped slot: a retained decoded commit applies
+// without slot continuity, and Resume or Resnapshot still decide whether
+// streaming can continue. An existing slot must satisfy the resume checks.
+func validateRetained(ctx context.Context, sql *pgx.Conn, repl *pgconn.PgConn, c Config, s *State) error {
+	if err := validateIdentity(ctx, sql, repl, c, s); err != nil {
+		return err
+	}
+	return validateSlot(ctx, sql, c, s, true)
+}
+
+func validateIdentity(ctx context.Context, sql *pgx.Conn, repl *pgconn.PgConn, c Config, s *State) error {
 	if s.Fingerprint != c.fingerprint() {
 		return errors.New("configuration changed; explicit new binding/resync required")
 	}
@@ -372,10 +389,17 @@ func validateResume(ctx context.Context, sql *pgx.Conn, repl *pgconn.PgConn, c C
 	if oid != s.RelationID || !reflect.DeepEqual(cols, s.Columns) {
 		return errors.New("source schema changed; action required")
 	}
+	return nil
+}
+
+func validateSlot(ctx context.Context, sql *pgx.Conn, c Config, s *State, allowMissing bool) error {
 	var plugin, db string
 	var restart, confirmed *string
 	var active bool
-	err = sql.QueryRow(ctx, `SELECT plugin,database,restart_lsn::text,confirmed_flush_lsn::text,active FROM pg_replication_slots WHERE slot_name=$1`, c.Slot).Scan(&plugin, &db, &restart, &confirmed, &active)
+	err := sql.QueryRow(ctx, `SELECT plugin,database,restart_lsn::text,confirmed_flush_lsn::text,active FROM pg_replication_slots WHERE slot_name=$1`, c.Slot).Scan(&plugin, &db, &restart, &confirmed, &active)
+	if allowMissing && errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
 	if err != nil || plugin != "pgoutput" || db != s.Database || restart == nil || confirmed == nil || active {
 		return errors.New("slot missing, invalid or already active; resync/ownership check required")
 	}

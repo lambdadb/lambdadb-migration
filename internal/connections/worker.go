@@ -573,7 +573,7 @@ func (w *Worker) recoverTransaction(ctx context.Context, capture *postgrescdc.Ca
 	if err != nil || p == nil {
 		return err
 	}
-	if err = capture.ValidateCut(ctx, dsn, p.Next); err != nil {
+	if err = capture.ValidateRetained(ctx, dsn, p.Next); err != nil {
 		return errors.New("source_setup_required")
 	}
 	old, err := w.source.Load()

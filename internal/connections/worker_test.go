@@ -554,3 +554,57 @@ func TestWorkerDisconnectsNeverStartedContinuousSourceWithoutCredentials(t *test
 		t.Fatal("disconnect of a never-started connection touched the target")
 	}
 }
+
+// A retained decoded commit finishes its plan after the slot is dropped; the
+// connection then stops until an explicit resync replaces the slot.
+func TestWorkerRetainedTransactionAppliesAfterSlotLossAndResyncs(t *testing.T) {
+	f := newWorkerFixture(t, "continuous")
+	cancel, done := f.worker(t, true)
+	f.await(t, func() bool { return f.phaseIs("running") && len(f.docs) == 2 })
+	// Stop after the first of two accepted intents so the commit stays prepared.
+	f.mu.Lock()
+	f.afterMutation = func() {
+		f.afterMutation = nil
+		cancel()
+	}
+	f.mu.Unlock()
+	f.sql(t, "UPDATE TABLE SET title='slotless'")
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("worker did not stop")
+	}
+	j, err := OpenJournal(filepath.Join(f.dir, "connection.db"), protocol.Fingerprint(f.approved.Binding), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := j.Load()
+	_ = j.Close()
+	if err != nil || state.Plan == nil || state.Plan.Cursor != 1 || state.Plan.Total != 2 || state.Pending != nil {
+		t.Fatalf("fixture did not retain a half-applied plan without a pending intent: %+v %v", state.Plan, err)
+	}
+	hash := sha256.Sum256([]byte(f.approved.Binding.ConnectionID))
+	if _, err = f.db.Exec(context.Background(), `SELECT pg_drop_replication_slot($1)`, "ldb_"+hex.EncodeToString(hash[:16])); err != nil {
+		t.Fatal(err)
+	}
+	updated := func() bool {
+		return string(f.docs["1"]["title"]) == `"slotless"` && string(f.docs["9007199254740993"]["title"]) == `"slotless"`
+	}
+	cancel, done = f.worker(t, false)
+	f.await(t, func() bool {
+		return f.phaseIs("action_required") && f.observation.Observation.ReasonCode == "source_setup_required" && updated()
+	})
+	f.command("running", true)
+	f.await(t, func() bool { return f.phaseIs("running") })
+	f.sql(t, "UPDATE TABLE SET title='after-resync' WHERE pk=1")
+	f.await(t, func() bool { return string(f.docs["1"]["title"]) == `"after-resync"` })
+	stopWorker(t, cancel, done)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.creates != 1 || len(f.docs) != 2 {
+		t.Fatal("slot loss recovery replaced the collection or lost documents")
+	}
+}
