@@ -1,8 +1,51 @@
 # LambdaDB Migration Handoff
 
-Last updated: 2026-09-16 (LambdaDB contract alignment; earlier live-test results remain historical)
+Last updated: 2026-10-29 (deployed live smoke gates; earlier live-test results remain historical)
 
 This document records the current implementation state so work can continue in another chat/session without rediscovering context.
+
+## Deployed Live Smoke Gates (2026-10-29)
+
+CI does not run real Qdrant, Pinecone, or Elasticsearch. The gates run the
+fixture live suite, `TestFixtureSourcesToLambdaDBLive` in
+`integration_tests/fixture_to_lambdadb_live_test.go`, against a real LambdaDB
+project:
+
+- Push to `main`: dev (`Dev live smoke` job in `ci.yml`). Pull requests have no credentials.
+- `Release verification` workflow (`workflow_dispatch` on `main`, optional `commit` input): production, before tagging.
+- `v*` tag push: `release.yml` rejects tags off `main`, runs the production suite, then GoReleaser publishes.
+
+Release order: dispatch Release verification for the main commit, wait for it to
+pass, tag that commit, push the tag.
+
+`integration_tests/fixture_source_test.go` holds the in-memory `source.Source`.
+It converts the existing Qdrant fixtures and the Pinecone smoke vectors into the
+inventory and records those adapters return, and adds an Elasticsearch-shaped
+text/analyzer fixture. `TestQdrantFixtureSourceMatchesAdapter` (gated by
+`LAMBDADB_MIGRATION_RUN_QDRANT_MOCK_E2E=1`) compares the Qdrant conversion with
+the real adapter; it found that Qdrant returns cosine vectors normalized. The
+live test drives `cmd.RunMigration` (the pipeline every source command uses),
+then checks the validation report, the collection index configs (including the
+server-managed `id` keyword), every document's fields and values, and `numDocs`,
+and deletes each collection and polls until it is gone.
+
+`tools/livesmoke` is the CI entry point: it reads the project API key from
+Secrets Manager with the AWS CLI after the workflow assumes the OIDC role
+(`lambdadb-migration-smoke` for dev, `lambdadb-migration-prod-smoke` for
+production, project `migration-ci` in both), masks it in GitHub Actions, passes
+it only in the `go test` child environment, and fails unless the live test ran
+and passed with no skipped case. The repository Variables are
+`LAMBDADB_{DEV,PROD}_{BASE_URL,PROJECT_NAME,SMOKE_AWS_ROLE_ARN,SMOKE_SECRET_ARN}`.
+See README "Live Smoke Gates" for local commands.
+
+Server constraints found while adding the suite: vector dimensions must be 64
+to 4096, so fixture vectors are zero-padded to 64 dimensions; similarity must be
+`cosine` or `euclidean`, so the named-vector fixture uses Qdrant `Euclid` instead
+of `Dot`. Mapping validation now rejects Qdrant `Dot`/`Manhattan`, Pinecone
+`dotproduct`, and Elasticsearch `dot_product`/`max_inner_product`, and vector
+dimensions outside 64 to 4096, before any LambdaDB request; inventory reports
+them as warnings. The `pinecone_dotproduct_rejected` live case checks that no
+collection is created. The real-source tests stay manual.
 
 ## LambdaDB Contract Alignment (2026-09-16)
 
@@ -213,8 +256,8 @@ Implemented in `internal/config`:
 
 - target collection matches the CLI target collection
 - dense and sparse vector mappings exist for inventory fields
-- vector dimensions are positive, match source dimensions, and stay within LambdaDB's 4,096 dimension limit
-- vector similarities are supported before LambdaDB collection creation
+- vector dimensions match source dimensions and stay within LambdaDB's 64 to 4,096 dimension range
+- vector similarities are `cosine` or `euclidean` before LambdaDB collection creation; errors name the source vector and its source metric
 - payload index types and text analyzers are supported
 - target field names in the mapping do not contain dots
 - id, vector, sparse-vector, payload, and payload-index target fields do not collide
@@ -631,11 +674,11 @@ Added `Dockerfile`, `.dockerignore`, `.goreleaser.yml`, and README install/build
 
 ### CI Added
 
-`.github/workflows/ci.yml` runs `go test ./...`, Docker build plus image smoke test, and GoReleaser snapshot on pull requests and pushes to `main`.
+`.github/workflows/ci.yml` runs `go test ./...`, Docker build plus image smoke test, and GoReleaser snapshot on pull requests and pushes to `main`. Pushes to `main` also run the dev fixture live smoke.
 
 ### Release Publishing Added
 
-`.github/workflows/release.yml` publishes GoReleaser artifacts on `v*` tag pushes using `GITHUB_TOKEN`. The repository has `origin` configured at `https://github.com/lambdadb/lambdadb-migration.git`, and release workflows have succeeded through `v0.1.3`.
+`.github/workflows/release.yml` publishes GoReleaser artifacts on `v*` tag pushes using `GITHUB_TOKEN`, after verifying the tag commit is on `main` and passing the production fixture live smoke. The repository has `origin` configured at `https://github.com/lambdadb/lambdadb-migration.git`, and release workflows have succeeded through `v0.1.3`.
 
 ### Integration Coverage Is Better But Still Small
 

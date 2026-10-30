@@ -64,3 +64,16 @@ jobs:
           distribution: goreleaser
           version: latest
           args: release --snapshot --clean
+
+  # Main pushes run the fixture live suite against the dev environment.
+  # Pull requests have no credentials and run no live tests.
+  live-smoke:
+    name: Dev live smoke
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/live-smoke.yml
+    with:
+      environment: dev

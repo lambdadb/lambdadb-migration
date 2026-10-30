@@ -71,7 +71,7 @@ func TestPineconeToRealLambdaDBSmoke(t *testing.T) {
 			indexSpec: pineconeSmokeIndexSpec{
 				Metric:     pineconeapi.Cosine,
 				VectorType: "dense",
-				Dimension:  int32(3),
+				Dimension:  int32(fixtureVectorDims),
 			},
 			vectors: pineconeDenseSmokeVectors(t),
 			assertDoc: func(doc map[string]any) error {
@@ -196,8 +196,8 @@ func pineconeDenseSmokeVectors(t *testing.T) []*pineconeapi.Vector {
 	t.Helper()
 	metadata1 := pineconeSmokeMetadata(t, "Pinecone document 1", "https://example.com/pinecone-1", 1)
 	metadata2 := pineconeSmokeMetadata(t, "Pinecone document 2", "https://example.com/pinecone-2", 2)
-	values1 := []float32{0.1, 0.2, 0.3}
-	values2 := []float32{0.2, 0.1, 0.4}
+	values1 := fixtureVector(0.1, 0.2, 0.3)
+	values2 := fixtureVector(0.2, 0.1, 0.4)
 	return []*pineconeapi.Vector{
 		{Id: "pc-1", Values: &values1, Metadata: metadata1},
 		{Id: "pc-2", Values: &values2, Metadata: metadata2},

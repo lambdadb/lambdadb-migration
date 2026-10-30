@@ -1,0 +1,56 @@
+# Verify a main commit against production before tagging it for release.
+name: Release verification
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Commit on main to verify. Defaults to the head of main.
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolve main commit
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The production smoke role trusts only main and v* tags.
+      - name: Verify the commit is on main
+        id: commit
+        env:
+          REQUESTED_COMMIT: ${{ inputs.commit }}
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "Run release verification from main, not $GITHUB_REF" >&2
+            exit 1
+          fi
+          git fetch origin main
+          SHA=$(git rev-parse --verify --end-of-options "${REQUESTED_COMMIT:-origin/main}^{commit}")
+          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "Commit $SHA is not on main" >&2
+            exit 1
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Verifying main commit \`$SHA\` against production. Tag this commit after the run passes." >> "$GITHUB_STEP_SUMMARY"
+
+  live-smoke:
+    name: Production live smoke
+    needs: resolve
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/live-smoke.yml
+    with:
+      environment: prod
+      ref: ${{ needs.resolve.outputs.sha }}

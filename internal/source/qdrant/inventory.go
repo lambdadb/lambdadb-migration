@@ -82,17 +82,17 @@ func addVector(inv *source.Inventory, name string, params *qdrantapi.VectorParam
 	if fieldName == "" {
 		fieldName = "dense"
 	}
-	inv.Vectors[name] = source.VectorField{
-		Name:       fieldName,
-		Dimensions: int64(params.GetSize()),
-		Similarity: mapDistance(params.GetDistance()),
+	vector := source.VectorField{
+		Name:             fieldName,
+		Dimensions:       int64(params.GetSize()),
+		Similarity:       mapDistance(params.GetDistance()),
+		SourceSimilarity: params.GetDistance().String(),
 	}
+	inv.Vectors[name] = vector
 	if params.GetMultivectorConfig() != nil {
 		inv.Warnings = append(inv.Warnings, fmt.Sprintf("vector %q uses Qdrant multi-vector config; migration requires custom handling", fieldName))
 	}
-	if params.GetDistance() == qdrantapi.Distance_Manhattan {
-		inv.Warnings = append(inv.Warnings, fmt.Sprintf("vector %q uses Manhattan distance, which has no direct LambdaDB similarity equivalent", fieldName))
-	}
+	inv.Warnings = append(inv.Warnings, config.VectorFieldWarnings("Qdrant", fieldName, vector)...)
 }
 
 func addSparseVectorConfig(inv *source.Inventory, cfg *qdrantapi.SparseVectorConfig) {

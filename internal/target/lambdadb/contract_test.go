@@ -21,7 +21,7 @@ const collectionPath = "/projects/test/collections/articles"
 // These fixtures follow the public create/describe DTOs: both are wrapped,
 // neither has collectionStatus, and creation returns only a metadata subset.
 const createdCollectionJSON = `{"collection":{"collectionName":"articles","description":"","tags":{},"defaultBranchName":"main","snapshotRetentionInDays":7,"createdAt":1789516800000}}`
-const describedCollectionJSON = `{"collection":{"projectName":"test","collectionName":"articles","indexConfigs":{},"description":"","tags":{},"numPartitions":1,"numDocs":42,"defaultBranchName":"main","snapshotRetentionInDays":7,"createdAt":1789516800000,"updatedAt":1789516800000}}`
+const describedCollectionJSON = `{"collection":{"projectName":"test","collectionName":"articles","indexConfigs":{"id":{"type":"keyword"}},"description":"","tags":{},"numPartitions":1,"numDocs":42,"defaultBranchName":"main","snapshotRetentionInDays":7,"createdAt":1789516800000,"updatedAt":1789516800000}}`
 
 func TestEnsureCollectionContract(t *testing.T) {
 	for _, tt := range []struct {

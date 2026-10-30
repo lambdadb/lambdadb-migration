@@ -24,11 +24,17 @@ const nativeIndexJSON = `{"embedding":{"model":"text-embedding-3-small","provide
 const legacyIndexJSON = `{"embedding":{"model":"text-embedding-3-small","provider":"openai","sourceField":"body"},"managedEmbedding":true,"type":"vector"}`
 const normalizedIndexJSON = `{"embedding":{"dimensions":1536,"model":"text-embedding-3-small","provider":"openai","similarity":"cosine","sourceField":"body"},"managedEmbedding":true,"type":"vector"}`
 
+// Ordered sources replace sourceField; the SDK omits the empty sourceField.
+const cohereSourcesIndexJSON = `{"embedding":{"dimensions":256,"model":"embed-v5.0-fast","provider":"cohere","sources":[{"field":"body","type":"text"},{"field":"image_url","type":"image"}]},"type":"vector"}`
+const normalizedCohereIndexJSON = `{"embedding":{"dimensions":256,"model":"embed-v5.0-fast","provider":"cohere","similarity":"cosine","sources":[{"field":"body","type":"text"},{"field":"image_url","type":"image"}]},"managedEmbedding":true,"type":"vector"}`
+
 func TestEmbeddingMappingToCollectionWire(t *testing.T) {
 	for _, raw := range []string{
 		nativeIndexJSON, legacyIndexJSON, normalizedIndexJSON,
 		`{"embedding":{"dimensions":256,"model":"text-embedding-3-small","provider":"openai","sourceField":"body"},"type":"vector"}`,
-		`{"embedding":{"dimensions":256,"model":"text-embedding-3-small","provider":"openai","similarity":"dot_product","sourceField":"body"},"type":"vector"}`,
+		`{"embedding":{"dimensions":256,"model":"text-embedding-3-small","provider":"openai","similarity":"euclidean","sourceField":"body"},"type":"vector"}`,
+		`{"embedding":{"model":"text-embedding-3-small","provider":"openai","sources":[{"field":"body","type":"text"}]},"type":"vector"}`,
+		cohereSourcesIndexJSON, normalizedCohereIndexJSON,
 	} {
 		for _, format := range []string{"json", "yaml"} {
 			t.Run(raw+"/"+format, func(t *testing.T) {
@@ -109,7 +115,13 @@ func TestEmbeddingValidationAndSchemaErrors(t *testing.T) {
 		{"stored vector", `{"embedding":null,"dimensions":3}`, "use vectors"},
 		{"unknown option", `{"extra":true}`, "unsupported embedding index options [extra]"},
 		{"unknown embedding option", `{"embedding":{"provider":"openai","model":"text-embedding-3-small","sourceField":"body","extra":true}}`, "unsupported embedding index options [embedding.extra]"},
+		{"unknown source option", `{"embedding":{"provider":"cohere","model":"embed-v5.0-fast","sources":[{"field":"body","type":"text"},{"field":"image_url","type":"image","weight":2}]}}`, "unsupported embedding index options [embedding.sources[1].weight]"},
+		{"source string", `{"embedding":{"provider":"cohere","model":"embed-v5.0-fast","sources":["body"]}}`, "cannot unmarshal string"},
 		{"fractional dimensions", `{"embedding":{"provider":"openai","model":"text-embedding-3-small","sourceField":"body","dimensions":1.5}}`, "int64"},
+		{"dot product similarity", `{"embedding":{"provider":"openai","model":"text-embedding-3-small","sourceField":"body","similarity":"dot_product"}}`, `unsupported embedding similarity "dot_product"; LambdaDB supports cosine, euclidean`},
+		{"max inner product similarity", `{"embedding":{"provider":"openai","model":"text-embedding-3-small","sourceField":"body","similarity":"max_inner_product"}}`, `unsupported embedding similarity "max_inner_product"`},
+		{"dimensions below minimum", `{"embedding":{"provider":"openai","model":"text-embedding-3-small","sourceField":"body","dimensions":32}}`, "embedding dimensions 32 are outside the LambdaDB range 64-4096"},
+		{"dimensions above maximum", `{"embedding":{"provider":"openai","model":"text-embedding-3-small","sourceField":"body","dimensions":8192}}`, "embedding dimensions 8192 are outside the LambdaDB range 64-4096"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var index map[string]any
@@ -144,44 +156,48 @@ func TestEmbeddingCannotReplaceMappedSourceVector(t *testing.T) {
 }
 
 func TestNormalizedEmbeddingMetadataDoesNotUpdateCollection(t *testing.T) {
-	calls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		if r.Method != "GET" || r.URL.Path != collectionPath {
-			t.Errorf("unexpected route %s %s", r.Method, r.URL.Path)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, strings.Replace(describedCollectionJSON, `"indexConfigs":{}`, `"indexConfigs":{"generated":`+normalizedIndexJSON+`}`, 1))
-	}))
-	defer server.Close()
-	target := newContractTarget(server.URL, config.WriteModeUpsert)
-	if err := target.EnsureCollection(context.Background(), nil, config.MappingConfig{Target: config.MappingTarget{CreateCollection: true}}); err != nil {
-		t.Fatal(err)
-	}
-	meta, err := target.client.Collection("articles").Get(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	union := meta.IndexConfigs["generated"]
-	if union.IndexConfigsManagedEmbeddingVector == nil {
-		t.Fatal("normalized metadata must decode as legacy managed embedding")
-	}
-	raw, err := json.Marshal(union)
-	if err != nil || string(raw) != normalizedIndexJSON {
-		t.Fatalf("metadata=%s err=%v", raw, err)
-	}
-	legacy := components.CreateIndexConfigsUnionManagedEmbeddingVector(components.IndexConfigsManagedEmbeddingVector{Embedding: union.IndexConfigsManagedEmbeddingVector.Embedding})
-	raw, err = json.Marshal(legacy)
-	if err != nil || string(raw) != normalizedIndexJSON {
-		t.Fatalf("legacy helper=%s err=%v", raw, err)
-	}
-	if calls != 2 {
-		t.Fatalf("calls=%d", calls)
+	for _, normalized := range []string{normalizedIndexJSON, normalizedCohereIndexJSON} {
+		t.Run(normalized, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if r.Method != "GET" || r.URL.Path != collectionPath {
+					t.Errorf("unexpected route %s %s", r.Method, r.URL.Path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(w, strings.Replace(describedCollectionJSON, `"indexConfigs":{`, `"indexConfigs":{"generated":`+normalized+`,`, 1))
+			}))
+			defer server.Close()
+			target := newContractTarget(server.URL, config.WriteModeUpsert)
+			if err := target.EnsureCollection(context.Background(), nil, config.MappingConfig{Target: config.MappingTarget{CreateCollection: true}}); err != nil {
+				t.Fatal(err)
+			}
+			meta, err := target.client.Collection("articles").Get(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			union := meta.IndexConfigs["generated"]
+			if union.IndexConfigsManagedEmbeddingVector == nil {
+				t.Fatal("normalized metadata must decode as legacy managed embedding")
+			}
+			raw, err := json.Marshal(union)
+			if err != nil || string(raw) != normalized {
+				t.Fatalf("metadata=%s err=%v", raw, err)
+			}
+			legacy := components.CreateIndexConfigsUnionManagedEmbeddingVector(components.IndexConfigsManagedEmbeddingVector{Embedding: union.IndexConfigsManagedEmbeddingVector.Embedding})
+			raw, err = json.Marshal(legacy)
+			if err != nil || string(raw) != normalized {
+				t.Fatalf("legacy helper=%s err=%v", raw, err)
+			}
+			if calls != 2 {
+				t.Fatalf("calls=%d", calls)
+			}
+		})
 	}
 }
 
 func TestMigrationWritesPreserveVectorsAndText(t *testing.T) {
-	inv := &source.Inventory{CollectionName: "source", Vectors: map[string]source.VectorField{"stored": {Name: "stored", Dimensions: 3, Similarity: "cosine"}}}
+	inv := &source.Inventory{CollectionName: "source", Vectors: map[string]source.VectorField{"stored": {Name: "stored", Dimensions: 64, Similarity: "cosine"}}}
 	mapping := config.MappingFromInventory(inv, "articles")
 	// Native generation is explicitly requested for a separate destination field.
 	var index map[string]any
@@ -246,7 +262,7 @@ func TestMigrationWritesPreserveVectorsAndText(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := json.Marshal(configs["stored"])
-	if string(raw) != `{"dimensions":3,"similarity":"cosine","type":"vector"}` {
+	if string(raw) != `{"dimensions":64,"similarity":"cosine","type":"vector"}` {
 		t.Fatalf("generated inventory changed stored vector contract: %s", raw)
 	}
 }

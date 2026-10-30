@@ -254,7 +254,7 @@ Elasticsearch point-in-time IDs can expire. If a resumed migration fails because
 ## Text Analyzer Mappings
 
 Text indexes support the 49 fixed presets from LambdaDB server merge
-`55d888299fee44466326a9db8016af9811ade13b` (PR #437), retained in Go SDK v0.7.0:
+`55d888299fee44466326a9db8016af9811ade13b` (PR #437), retained in Go SDK v0.8.0:
 
 ```text
 standard english korean japanese arabic chinese cjk french german hindi
@@ -338,7 +338,7 @@ Useful migration safety flags:
 
 Generated inventory mappings set `target.createCollection: true` by default, so the migration creates the LambdaDB collection when it is missing. Use `--migration.create-collection=false` to require the target collection to exist, or `--migration.create-collection=true` to override a mapping file that has collection creation disabled.
 
-The target uses LambdaDB Go SDK `v0.7.1`. Collection creation returns HTTP 201 with collection metadata; the current API has no `collectionStatus` readiness field to poll. Transient write errors use the configured retry policy. Bulk uploads forward the signed headers returned by LambdaDB (including `If-None-Match: *`) and send `Content-Type: application/json`. A retried upload obtains a fresh URL; checkpoints advance only after every write for a source batch succeeds.
+The target uses LambdaDB Go SDK `v0.8.0`. Collection creation returns HTTP 201 with collection metadata; the current API has no `collectionStatus` readiness field to poll. Transient write errors use the configured retry policy. Bulk uploads forward the signed headers returned by LambdaDB (including `If-None-Match: *`) and send `Content-Type: application/json`. A retried upload obtains a fresh URL; checkpoints advance only after every write for a source batch succeeds.
 
 Checkpoints record source exhaustion separately from validation success. Re-running a completed checkpoint skips source reads and writes, while requested validation and cleanup still run. Validation-enabled migrations retain up to `--migration.validation-sample-size` sample documents in the local checkpoint so failed validation can be retried without re-uploading; checkpoint files use owner-only permissions. If a completed checkpoint has no saved samples, requesting sample validation requires `--migration.restart` (or sample size `0` for count-only validation).
 
@@ -374,6 +374,48 @@ Local migration checkpoints are stored in the directory where you ran the migrat
 rm -rf .lambdadb-migration
 ```
 
+## Vector Similarity Mapping
+
+LambdaDB vector fields with caller-provided values accept only `cosine` and
+`euclidean` similarity and 64 to 4096 dimensions. Inventory maps source metrics
+as follows:
+
+| Source | Source metric | Generated `similarity` | Result |
+| :-- | :-- | :-- | :-- |
+| Qdrant | `Cosine` | `cosine` | Supported |
+| Qdrant | `Euclid` | `euclidean` | Supported |
+| Qdrant | `Dot` | `dot_product` | Rejected |
+| Qdrant | `Manhattan` | `unsupported:manhattan` | Rejected |
+| Pinecone | `cosine` | `cosine` | Supported |
+| Pinecone | `euclidean` | `euclidean` | Supported |
+| Pinecone | `dotproduct` (dense index) | `dot_product` | Rejected |
+| Elasticsearch | `cosine` or omitted | `cosine` | Supported |
+| Elasticsearch | `l2_norm` | `euclidean` | Supported |
+| Elasticsearch | `dot_product` | `dot_product` | Rejected |
+| Elasticsearch | `max_inner_product` | `max_inner_product` | Rejected |
+
+Pinecone sparse indexes use `dotproduct` and migrate to LambdaDB sparse vector
+fields, which have no similarity setting.
+
+`inventory` still reports the source as it is: each vector lists the generated
+`similarity` and the original `sourceSimilarity`, and `warnings` names every
+vector whose metric or dimensions LambdaDB cannot store. Migration runs,
+including `--migration.dry-run`, validate the mapping before any LambdaDB request
+and exit with an error such as:
+
+```text
+error: vector "<unnamed>" uses unsupported similarity "dot_product" (source qdrant metric "Dot"); LambdaDB supports cosine, euclidean. Set a supported similarity in a mapping file only if it preserves the source ranking for your vectors
+```
+
+The CLI never converts a similarity on its own. To migrate such a vector, edit
+`vectors.<source vector>.similarity` in the mapping file to `cosine` or
+`euclidean` and pass it with `--mapping-file`. Choose this only when it keeps the
+ranking you need. For example, dot product and cosine rank unit-length vectors
+identically, but they rank vectors of differing lengths differently. Validation
+also rejects vector dimensions below 64 or above 4096, and native embedding
+mappings whose `embedding.similarity` or `embedding.dimensions` fall outside these
+limits.
+
 ## Mapping Examples
 
 For named vectors, generate an inventory first and review the generated `vectors` mapping:
@@ -387,7 +429,7 @@ vectors:
   body_dense:
     targetField: body_dense
     dimensions: 768
-    similarity: dot_product
+    similarity: euclidean
 ```
 
 For hybrid-style dense plus sparse data, keep both vector mappings and indexed payload fields explicit:
@@ -413,8 +455,12 @@ payload:
 ## Native Embedding Mappings
 
 Go SDK [v0.7.0](https://github.com/lambdadb/go-lambdadb/releases/tag/v0.7.0)
-(tag commit `fd3000bcb4353b3d6ed23fcca4f111955b36b33e`) supports the native
+(tag commit `fd3000bcb4353b3d6ed23fcca4f111955b36b33e`) introduced the native
 embedding contract pinned to backend `9072a1bc8925954369a887f558f1eaf387b7ea0e`.
+The target now uses [v0.8.0](https://github.com/lambdadb/go-lambdadb/releases/tag/v0.8.0),
+which adds the `cohere` provider and ordered `sources` from backend
+`1c3e7d453cca296a7b2af85a375b4c5016504101`; see its [current API contract](https://github.com/lambdadb/go-lambdadb/blob/v0.8.0/docs/api-contract.md)
+for server limits and constraints.
 To explicitly generate an additional vector from migrated text, add this to a
 reviewed mapping and select `--migration.write-mode upsert` (JSON input is also
 supported):
@@ -438,6 +484,35 @@ payload:
 `embedding.sourceField` names the **destination** field after payload renaming
 and normalization. The CLI preserves it literally. Omitted `managedEmbedding`
 enables native embeddings; no flag, dimensions or similarity default is inserted.
+
+Instead of `sourceField`, `embedding.sources` lists ordered `{field, type}`
+inputs combined into one vector. Each `field` is a destination path (dotted
+paths select values inside stored objects) and `type` is `text` or `image`.
+OpenAI takes exactly one text source; Cohere (`embed-v5.0-pro`,
+`embed-v5.0-fast`) takes up to 16 text or image sources, where an image field
+holds a public HTTPS URL or supported data URI, or a flat array of them:
+
+```yaml
+payload:
+  indexConfigs:
+    generated_vector:
+      type: vector
+      embedding:
+        provider: cohere
+        model: embed-v5.0-fast
+        dimensions: 1024
+        sources:
+          - field: body
+            type: text
+          - field: image_url
+            type: image
+```
+
+Set exactly one of `sourceField` or `sources`; the CLI omits an empty
+`sourceField` and leaves that choice, source types, paths and image limits to
+server validation. Cohere dimensions are 256, 512, 768, 1024, 1536 or 2048
+(default 2048).
+
 For explicit dimensions or similarity, put them inside `embedding`:
 
 ```json
@@ -455,7 +530,8 @@ For explicit dimensions or similarity, put them inside `embedding`:
 
 Legacy `managedEmbedding: true` is accepted and preserved, including normalized
 server metadata. Explicit `managedEmbedding: false` with `embedding`, top-level
-native dimensions/similarity and unknown options are rejected. Structural errors
+native dimensions/similarity and unknown options, including keys other than
+`field`/`type` in a `sources` entry, are rejected. Structural errors
 are reported during mapping validation and schema construction; model and
 source-field compatibility remain server validations with SDK error types intact.
 
@@ -469,21 +545,24 @@ this tool has no schema update path.
 
 **Native generation is an explicit migration choice.** On a compatible backend,
 regular upsert of text to a collection with a native field can invoke the provider,
-including retries. The pinned backend rejects bulk upsert for collections with
-native embedding fields; select `--migration.write-mode upsert` explicitly.
-The CLI retains its existing bulk default and propagates the server rejection. Native fields reject directly supplied vectors; keep
-stored vectors in ordinary vector fields to preserve migration fidelity. This
-also applies to pre-existing target collections, whose schema the CLI does not
-reconcile. The CLI does not suppress generation or promise provider-call
-idempotency. Count/sample validation checks migrated fields; it does not validate
+including retries. Bulk upload never generates native embeddings: it accepts a
+native collection only when each document with a present source also supplies
+that field's vector, which migrated documents do not, so select
+`--migration.write-mode upsert` explicitly. The CLI retains its existing bulk
+default and propagates the server rejection. The current API also accepts
+caller-supplied vectors on native fields, but this CLI does not map a stored
+source vector into a native field: the collision check above still applies, so
+keep stored vectors in ordinary vector fields. The CLI does not reconcile the
+schema of pre-existing target collections, suppress generation or promise
+provider-call idempotency. Count/sample validation checks migrated fields; it does not validate
 the quality of additional generated vectors.
 
 Query-overlap validation still uses caller-vector KNN and sparse retrieval. It
 omits top-level `candidateSize` and rerank, preserves server result order, and
-cannot validate a native field via `queryVector`. There are no Bayesian queries,
+does not query generated native fields. There are no Bayesian queries,
 rerank requests or score-processing paths to migrate here; Bayesian is not a
 migration default. For separate SDK queries, follow the
-[Bayesian/native embedding guide](https://github.com/lambdadb/go-lambdadb/blob/v0.7.0/docs/bayesian-native-embeddings.md).
+[Bayesian/native embedding guide](https://github.com/lambdadb/go-lambdadb/blob/v0.8.0/docs/bayesian-native-embeddings.md).
 
 The SDK's dev validation does not establish this CLI's target deployment. Before
 live migration, verify the actual running backend revision and compatible schema.
@@ -535,14 +614,58 @@ Create a local release snapshot with GoReleaser:
 goreleaser release --snapshot --clean
 ```
 
-Publish a GitHub release:
+Publish a GitHub release from a commit on `main`, in this order:
 
-```bash
-git tag v0.1.3
-git push origin v0.1.3
-```
+1. Run the **Release verification** workflow from `main` (Actions tab, or
+   `gh workflow run release-verification.yml --ref main -f commit=<sha>`). It
+   runs the fixture live suite against production on that commit. An empty
+   `commit` verifies the current head of `main`.
+2. After it passes, tag the verified commit and push the tag:
 
-Tag pushes matching `v*` run the release workflow and publish GoReleaser artifacts to GitHub Releases.
+   ```bash
+   git tag v0.1.3 <sha>
+   git push origin v0.1.3
+   ```
+
+Tag pushes matching `v*` run the release workflow. It rejects a tag whose commit
+is not on `main`, runs the production fixture live suite again, and only then
+publishes GoReleaser artifacts to GitHub Releases. A failed smoke publishes
+nothing; fix the problem on `main` and release a new version instead of moving
+the tag.
+
+## Live Smoke Gates
+
+Deployed LambdaDB gates run the fixture live suite
+(`TestFixtureSourcesToLambdaDBLive`):
+
+| Event | LambdaDB environment |
+| :-- | :-- |
+| Pull request | None. CI has no credentials. |
+| Push to `main` | dev (`Dev live smoke` job in CI) |
+| Release verification (`workflow_dispatch` on `main`) | production |
+| `v*` tag push | production, before GoReleaser publishes |
+
+`.github/workflows/live-smoke.yml` is the shared job. It assumes a GitHub OIDC
+role, then `go run ./tools/livesmoke` reads the project API key from AWS Secrets
+Manager, masks it in the GitHub Actions log, and passes it only in the `go test` child
+environment, never in arguments, files, or artifacts. The runner fails on
+missing configuration, a failed secret read, a failed test, a skipped test or
+case, or a run that did not execute the live test.
+
+The workflows read these repository Variables. A missing Variable fails the run;
+it never falls back to the other environment.
+
+| Variable | Value |
+| :-- | :-- |
+| `LAMBDADB_DEV_BASE_URL`, `LAMBDADB_PROD_BASE_URL` | LambdaDB endpoint |
+| `LAMBDADB_DEV_PROJECT_NAME`, `LAMBDADB_PROD_PROJECT_NAME` | Dedicated smoke project (`migration-ci`) |
+| `LAMBDADB_DEV_SMOKE_AWS_ROLE_ARN`, `LAMBDADB_PROD_SMOKE_AWS_ROLE_ARN` | OIDC roles `lambdadb-migration-smoke` and `lambdadb-migration-prod-smoke` |
+| `LAMBDADB_DEV_SMOKE_SECRET_ARN`, `LAMBDADB_PROD_SMOKE_SECRET_ARN` | Secrets Manager ARN of the project API key (`ap-northeast-2`) |
+
+The dev role trusts `repo:lambdadb/lambdadb-migration:ref:refs/heads/main`; the
+production role trusts that subject and
+`repo:lambdadb/lambdadb-migration:ref:refs/tags/v*`. Grant each role read access only to its
+own environment's secret.
 
 ## Integration Tests
 
@@ -554,6 +677,56 @@ LAMBDADB_MIGRATION_RUN_QDRANT_MOCK_E2E=1 go test ./integration_tests -run TestQd
 ```
 
 The test seeds temporary Qdrant collections and migrates them through the CLI path into an in-process LambdaDB mock server.
+The same flag runs `TestQdrantFixtureSourceMatchesAdapter`, which checks that the
+Qdrant-shaped fixture source below returns the same inventory and records as the
+real Qdrant adapter.
+
+### Fixture live suite
+
+`TestFixtureSourcesToLambdaDBLive` needs no source database. In-memory fixture
+sources return what the Qdrant, Pinecone, and Elasticsearch adapters produce:
+the Qdrant fixtures above, Pinecone dense and sparse vectors with metadata, and
+an Elasticsearch index with analyzer-backed text, keyword, numeric, date,
+boolean, and `dense_vector` fields. Each case runs the CLI migration pipeline
+into a temporary collection in a real LambdaDB project, checks the validation
+report, the collection schema, every document's content, and `numDocs`, then
+deletes the collection and verifies that it is gone. The
+`pinecone_dotproduct_rejected` case instead requires mapping validation to fail
+and checks that no collection was created. The
+`qdrant_cohere_native_sources_upsert` case adds a Cohere native embedding field
+with two ordered text `sources`; the server calls Cohere for each document, and
+the case checks the stored schema and that each document has a generated vector
+of the requested dimensions. Vector fixtures use 64 dimensions,
+the LambdaDB minimum.
+
+Run it locally against a project where temporary collections may be created
+and deleted:
+
+```bash
+set -a
+source .env.local
+set +a
+
+LAMBDADB_MIGRATION_RUN_FIXTURE_LIVE_E2E=1 go test ./integration_tests \
+  -run '^TestFixtureSourcesToLambdaDBLive$' -count=1 -v -timeout 30m
+```
+
+With the flag set, missing LambdaDB variables fail the test instead of skipping
+it. To run exactly what CI runs, with the key read from Secrets Manager through
+your AWS profile:
+
+```bash
+AWS_PROFILE=dev \
+LAMBDADB_BASE_URL="https://internal-dev-aws-apne2-v3-c05a2b5d492a.lambdadb.ai" \
+LAMBDADB_PROJECT_NAME=migration-ci \
+LAMBDADB_SMOKE_SECRET_ARN="<LAMBDADB_DEV_SMOKE_SECRET_ARN value>" \
+go run ./tools/livesmoke
+```
+
+Use the `LAMBDADB_PROD_` values from `gh variable list --repo lambdadb/lambdadb-migration`
+for production. The real-source tests below remain manual.
+
+### Real-source tests
 
 For controlled end-to-end checks against a real LambdaDB project, copy `.env.example` to `.env.local`, fill in credentials, and run:
 

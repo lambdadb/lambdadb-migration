@@ -22,7 +22,7 @@ func (c *MigrateElasticsearchCmd) Run(globals *Globals) error {
 	}
 	defer src.Close()
 
-	return runMigration(ctx, migrationRunConfig{
+	return RunMigration(ctx, MigrationRun{
 		SourceKind:       "elasticsearch",
 		SourceCollection: c.Elasticsearch.Index,
 		Source:           src,
