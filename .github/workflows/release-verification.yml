@@ -21,7 +21,7 @@ jobs:
       sha: ${{ steps.commit.outputs.sha }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -47,9 +47,29 @@ jobs:
   live-smoke:
     name: Production live smoke
     needs: resolve
-    permissions:
-      contents: read
-    uses: ./.github/workflows/live-smoke.yml
-    with:
-      environment: prod
-      ref: ${{ needs.resolve.outputs.sha }}
+    runs-on: ubuntu-latest
+    # The Environment holds this repository's prod smoke key; its deployment
+    # policy admits only main and v* tags.
+    environment: prod
+    timeout-minutes: 40
+    steps:
+      - name: Check out the commit to verify
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+
+      # The verified commit may predate the smoke action, so load the action
+      # from this workflow's revision, beside the verified tree.
+      - name: Check out the smoke action
+        uses: actions/checkout@v7
+        with:
+          path: .smoke-action
+          sparse-checkout: .github/actions/live-smoke
+          sparse-checkout-cone-mode: false
+
+      - name: Run deployed fixture live smoke
+        uses: ./.smoke-action/.github/actions/live-smoke
+        with:
+          base-url: ${{ vars.LAMBDADB_PROD_BASE_URL }}
+          project-name: ${{ vars.LAMBDADB_PROD_PROJECT_NAME }}
+          project-api-key: ${{ secrets.LAMBDADB_PROJECT_API_KEY }}
